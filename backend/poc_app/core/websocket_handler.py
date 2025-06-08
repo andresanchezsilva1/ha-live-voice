@@ -84,6 +84,9 @@ class WebSocketHandler:
                 error_context={"operation": "websocket_connection"}
             )
             
+            # Garantir que o monitoramento está ativo
+            await performance_monitor.ensure_monitoring_started()
+            
             # Registrar métricas e logs
             performance_monitor.record_connection_start(connection_id)
             
@@ -105,11 +108,22 @@ class WebSocketHandler:
                     # Receber dados do frontend Vue3
                     raw_data = await websocket.receive()
                     
+                    # Extrair texto da mensagem WebSocket
+                    if raw_data.get("type") == "websocket.receive":
+                        if "text" in raw_data:
+                            message_text = raw_data["text"]
+                        elif "bytes" in raw_data:
+                            message_text = raw_data["bytes"].decode('utf-8')
+                        else:
+                            continue  # Ignorar mensagens sem conteúdo
+                    else:
+                        continue  # Ignorar outros tipos de mensagem
+                    
                     # Processar mensagem com recuperação
                     await self.error_recovery.execute_with_recovery(
-                        operation=lambda: self._process_raw_message(websocket, connection_id, raw_data),
+                        operation=lambda: self._process_raw_message(websocket, connection_id, message_text),
                         connection_id=connection_id,
-                        error_context={"operation": "message_processing", "data_type": type(raw_data).__name__}
+                        error_context={"operation": "message_processing", "data_type": type(message_text).__name__}
                     )
                     
                 except WebSocketDisconnect:
@@ -220,17 +234,17 @@ class WebSocketHandler:
             )
     
     @log_async_operation("message_processing")
-    async def _process_raw_message(self, websocket: WebSocket, connection_id: str, raw_data: Dict[str, Any]) -> None:
+    async def _process_raw_message(self, websocket: WebSocket, connection_id: str, raw_data: str) -> None:
         """
         Processa dados brutos recebidos do cliente usando o protocolo estruturado.
         
         Args:
             websocket: Instância do WebSocket
             connection_id: ID único da conexão
-            raw_data: Dados brutos recebidos do WebSocket
+            raw_data: Dados brutos recebidos do WebSocket (string JSON)
         """
         start_time = time.time()
-        message_size = len(json.dumps(raw_data).encode('utf-8'))
+        message_size = len(raw_data.encode('utf-8'))
         
         try:
             # Parsear mensagem usando o protocolo
