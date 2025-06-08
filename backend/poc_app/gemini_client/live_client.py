@@ -64,10 +64,11 @@ class GeminiLiveClient:
                 },
                 "system_instruction": (
                     "Você é um assistente de casa inteligente que fala português brasileiro. "
-                    "Responda de forma concisa e natural."
-                )
-                # Removendo tools temporariamente para testar conectividade
-                # "tools": HA_FUNCTION_DECLARATIONS
+                    "Responda de forma concisa e natural. Use as funções disponíveis para "
+                    "controlar dispositivos quando solicitado."
+                ),
+                # Habilitando tools para testar function calling com Task 3
+                "tools": [{"function_declarations": HA_FUNCTION_DECLARATIONS}]
             }
             
             # Se config personalizado for fornecido, usar ele completamente

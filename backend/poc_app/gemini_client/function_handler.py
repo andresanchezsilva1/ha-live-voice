@@ -114,11 +114,9 @@ class HomeAssistantFunctionHandler:
         entity_id = args["entity_id"]
         action = args["action"]
         
-        # Usar o método control_light da Tarefa 3: control_light(entity_id, state, brightness=None, color=None)
         if action == "turn_on":
-            # Preparar parâmetros para control_light
             brightness = None
-            color = None
+            rgb_color = None
             
             # Converter brightness_pct para brightness (0-255)
             if "brightness_pct" in args:
@@ -128,12 +126,12 @@ class HomeAssistantFunctionHandler:
                 
             # Usar rgb_color se fornecido
             if "rgb_color" in args:
-                color = args["rgb_color"]
+                rgb_color = args["rgb_color"]
             
             # Para kelvin e color_name, vamos precisar converter ou passar como atributos extras
             extra_params = {}
             if "kelvin" in args:
-                extra_params["kelvin"] = args["kelvin"]
+                extra_params["color_temp"] = args["kelvin"]  # Mapear kelvin para color_temp
             if "color_name" in args:
                 extra_params["color_name"] = args["color_name"]
             
@@ -141,7 +139,7 @@ class HomeAssistantFunctionHandler:
                 entity_id=entity_id, 
                 state="on", 
                 brightness=brightness, 
-                color=color,
+                rgb_color=rgb_color,
                 **extra_params
             )
             
