@@ -222,8 +222,64 @@
       "dependencies": [
         1
       ],
-      "status": "pending",
-      "subtasks": []
+      "status": "done",
+      "subtasks": [
+        {
+          "id": 1,
+          "title": "Implement GeminiLiveClient class",
+          "description": "Create the GeminiLiveClient class with methods for initializing the client, starting audio sessions, and processing audio chunks.",
+          "dependencies": [],
+          "details": "Implement the GeminiLiveClient class in gemini_client/client.py with __init__, start_audio_session, and process_audio_chunk methods. Use the Google GenerativeAI library to interact with the Gemini API. Ensure proper error handling for API initialization and audio processing.\n<info added on 2025-06-08T02:05:47.494Z>\n✅ **Implementação da classe GeminiLiveClient concluída**\n\n**Arquivo criado:** `backend/poc_app/gemini_client/client.py`\n\n**Funcionalidades implementadas:**\n- ✅ Classe `GeminiLiveClient` com inicialização robusta\n- ✅ Método `start_audio_session()` para iniciar sessões com function calling\n- ✅ Método `process_audio_chunk()` para processar áudio em tempo real\n- ✅ Método `process_text_message()` para mensagens de texto\n- ✅ Método `_process_response()` para extrair texto, áudio e function calls\n- ✅ Método `send_function_result()` para enviar resultados de funções de volta\n- ✅ Método `close_session()` e `reconnect()` para gerenciamento de sessão\n- ✅ Tratamento de erro abrangente em todos os métodos\n- ✅ Logging detalhado para debugging\n- ✅ Validações de entrada e estados\n\n**Destaques técnicos:**\n- Usa `google.genai` com modelo `gemini-2.0-flash-exp` \n- Configuração adequada para resposta multimodal (AUDIO + TEXT)\n- `enable_automatic_function_calling=False` para controle manual\n- Método `_process_response()` estrutura as respostas em formato consistente\n- Propriedades para verificar estado da conexão\n- Lógica de reconexão com backoff\n</info added on 2025-06-08T02:05:47.494Z>",
+          "status": "done",
+          "testStrategy": "Write unit tests for GeminiLiveClient class, mocking the GenerativeAI library calls to test initialization, session creation, and audio chunk processing."
+        },
+        {
+          "id": 2,
+          "title": "Define Home Assistant function declarations",
+          "description": "Create a comprehensive set of function declarations for Home Assistant control, including lights, switches, scenes, and other relevant entities.",
+          "dependencies": [],
+          "details": "Define HA_FUNCTION_DECLARATIONS as a list of dictionaries in gemini_client/ha_functions.py. Include function declarations for controlling lights, switches, scenes, and other relevant Home Assistant entities. Ensure each declaration has a proper name, description, and parameters schema.\n<info added on 2025-06-08T02:06:54.509Z>\nHome Assistant function declarations have been successfully created in the specified file path. The implementation includes comprehensive function declarations for multiple domains:\n\n- LIGHT_FUNCTIONS: Complete light control (on/off, brightness, RGB color, Kelvin temperature, named colors)\n- SWITCH_FUNCTIONS: Control of smart switches and outlets\n- SCENE_FUNCTIONS: Activation of predefined scenes\n- CLIMATE_FUNCTIONS: Control of air conditioning, heating, and thermostats\n- MEDIA_FUNCTIONS: Media player control (Spotify, TV, etc.)\n- SENSOR_FUNCTIONS: Sensor state queries\n- STATE_FUNCTIONS: General state queries and entity listing\n- COVER_FUNCTIONS: Control of curtains, blinds, and gates\n- LOCK_FUNCTIONS: Smart lock control\n\nAdditional features implemented:\n- Consolidated list `HA_FUNCTION_DECLARATIONS` containing all functions\n- Domain-organized mapping in `FUNCTION_DOMAINS`\n- Utility functions: `get_functions_for_domain()`, `get_all_function_names()`, `get_function_by_name()`\n- Complete JSON Schema validation for all parameters\n- Documentation in Portuguese for better integration with Brazilian users\n\nA total of 11 comprehensive functions were implemented covering all major Home Assistant domains.\n</info added on 2025-06-08T02:06:54.509Z>",
+          "status": "done",
+          "testStrategy": "Validate the function declarations against a JSON schema to ensure they meet the required structure and contain all necessary fields."
+        },
+        {
+          "id": 3,
+          "title": "Implement function call handling",
+          "description": "Develop the handle_function_call method to process function calls from Gemini and execute them via the Home Assistant client.",
+          "dependencies": [
+            1,
+            2
+          ],
+          "details": "Implement the handle_function_call method in the GeminiLiveClient class. Map function calls received from Gemini to corresponding Home Assistant client methods. Handle all defined function types (lights, switches, scenes, etc.) and implement proper error handling for unknown function calls or execution failures.\n<info added on 2025-06-08T02:10:27.603Z>\nFunction call handler successfully implemented in a dedicated file `backend/poc_app/gemini_client/function_handler.py`. Created a comprehensive `HomeAssistantFunctionHandler` class with the main `handle_function_call()` method and complete mapping for all 11 Home Assistant function types. Each function type has a dedicated handler method with proper parameter processing. Implemented robust error handling with standardized responses and detailed logging for debugging.\n\nThe GeminiLiveClient integration was completed with a `_function_handler` attribute, `set_function_handler()` method, `process_function_calls()` method, and a `has_function_handler` property. The module's `__init__.py` was updated to export all classes, and the interface is now ready for integration with the Home Assistant client in Task 3.\n</info added on 2025-06-08T02:10:27.603Z>",
+          "status": "done",
+          "testStrategy": "Create unit tests for handle_function_call, mocking both Gemini responses and Home Assistant client methods to ensure correct mapping and execution of function calls."
+        },
+        {
+          "id": 4,
+          "title": "Implement audio response handling",
+          "description": "Create the get_audio_response method to generate audio responses after function execution.",
+          "dependencies": [
+            1,
+            3
+          ],
+          "details": "Implement the get_audio_response method in the GeminiLiveClient class. This method should send the function execution result back to the Gemini API and retrieve the generated audio response. Implement proper error handling for API communication failures and unexpected response formats.\n<info added on 2025-06-08T02:11:59.811Z>\nThe get_audio_response method has been successfully implemented in the GeminiLiveClient class with the following features:\n\n1. Main method `get_audio_response()`:\n   - Generates audio response after function execution\n   - Accepts function result and optional context message\n   - Processes Gemini response with focus on audio content\n   - Includes detailed logging for debugging\n   - Implements robust error handling\n\n2. Helper method `_generate_context_message()`:\n   - Creates intelligent contextual messages based on function type\n   - Supports all 11 Home Assistant function types including:\n     - Lights (on/off/toggle with specific confirmations)\n     - Switches (states and actions)\n     - Scenes (activation with environment context)\n     - Climate (temperature and HVAC mode)\n     - Media (play/pause/volume with details)\n     - Sensors (current states)\n     - Entity listing (count and type)\n     - Covers (position and movement)\n     - Locks (lock/unlock)\n   - Provides Portuguese messages for better user experience\n   - Handles errors with informative messages\n\n3. Convenience method `process_with_audio_response()`:\n   - Processes input (audio or text) with automatic function calling\n   - Automatically generates confirmation audio responses\n   - Supports multiple function calls\n   - Differentiates between success and error confirmations\n   - Returns complete response with both audio and text\n\nAdvanced capabilities:\n- Automatic detection of input type (text vs audio)\n- Contextual message generation based on results\n- Differentiated audio responses for success vs error scenarios\n- Complete integration with the function calling pipeline\n</info added on 2025-06-08T02:11:59.811Z>",
+          "status": "done",
+          "testStrategy": "Write unit tests for get_audio_response, mocking Gemini API calls to test various scenarios including successful responses and error conditions."
+        },
+        {
+          "id": 5,
+          "title": "Implement session management and error handling",
+          "description": "Add robust session management, reconnection logic, and comprehensive error handling to the GeminiLiveClient.",
+          "dependencies": [
+            1,
+            3,
+            4
+          ],
+          "details": "Enhance the GeminiLiveClient with methods for managing API sessions, implementing reconnection logic for dropped connections, and adding comprehensive error handling throughout the client. Include logging for all critical operations and errors. Implement a method to gracefully close sessions and clean up resources.\n<info added on 2025-06-08T02:14:36.955Z>\n✅ SESSION MANAGEMENT COMPLETED\n\nImplementation successfully finalized! The GeminiLiveClient now has a robust session management system:\n\n## Implemented Features:\n\n### 1. Session Configuration (Constructor):\n- `_max_reconnect_attempts = 3`: Maximum reconnection attempts\n- `_reconnect_delay = 1.0`: Initial delay between attempts\n- `_session_timeout = 300`: 5-minute timeout for inactivity\n- `_last_activity`: Tracking of last activity\n- `_connection_errors`: Connection error counter\n- `_session_id`: Session identifier\n\n### 2. Health Monitoring:\n- `_update_last_activity()`: Updates timestamp of last activity\n- `_is_session_expired()`: Checks if session expired due to inactivity\n- `check_session_health()`: Complete session health verification\n  - Checks active connection\n  - Verifies inactivity expiration\n  - Tests connectivity with ping\n\n### 3. Automatic Reconnection:\n- `ensure_connected()`: Ensures active connection, reconnecting if necessary\n- `reconnect_with_retry()`: Reconnection with exponential backoff\n  - Multiple attempts (configurable)\n  - Increasing delay between attempts (1s, 2s, 4s...)\n  - Reset of error counter on success\n- `reconnect()`: Simple reconnection with fixed delay\n\n### 4. Resource Cleanup:\n- `close_session()`: Clean session closure\n- Cleanup of references and state flags\n- Detailed logging of all operations\n\n### 5. State Properties:\n- `is_connected`: Connection status\n- `has_function_handler`: Handler configuration check\n\n## Technical Characteristics:\n- ✅ Exponential backoff for reconnections\n- ✅ Configurable timeout for inactivity\n- ✅ Detailed logging for debugging\n- ✅ Robust exception handling\n- ✅ Automatic resource cleanup\n- ✅ Proactive session health verification\n\nThe implementation is complete and ready for production use!\n</info added on 2025-06-08T02:14:36.955Z>",
+          "status": "done",
+          "testStrategy": "Develop integration tests that simulate various error conditions, such as network failures and API errors, to ensure the client can recover and maintain a stable connection. Test session lifecycle management including creation, reconnection, and proper closure."
+        }
+      ]
     },
     {
       "id": 5,
