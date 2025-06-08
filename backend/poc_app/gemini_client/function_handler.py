@@ -19,7 +19,7 @@ class HomeAssistantFunctionHandler:
         Inicializa o handler com uma instância do cliente Home Assistant
         
         Args:
-            ha_client: Instância do cliente Home Assistant (será implementado na task 3)
+            ha_client: Instância do cliente Home Assistant (implementado na task 3)
         """
         self.ha_client = ha_client
         self.supported_functions = get_all_function_names()
@@ -72,7 +72,7 @@ class HomeAssistantFunctionHandler:
         Returns:
             Resultado da execução
         """
-        # Mapeamento de funções para métodos do cliente Home Assistant
+        # Mapeamento de funções para métodos do cliente Home Assistant (Tarefa 3)
         function_mapping = {
             # Controle de luzes
             "control_light": self._handle_light_control,
@@ -110,33 +110,46 @@ class HomeAssistantFunctionHandler:
         return await handler(args)
     
     async def _handle_light_control(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Handler para controle de luzes"""
+        """Handler para controle de luzes - Adaptado para métodos da Tarefa 3"""
         entity_id = args["entity_id"]
         action = args["action"]
         
+        # Usar o método control_light da Tarefa 3: control_light(entity_id, state, brightness=None, color=None)
         if action == "turn_on":
-            # Preparar parâmetros opcionais para turn_on
-            turn_on_params = {"entity_id": entity_id}
+            # Preparar parâmetros para control_light
+            brightness = None
+            color = None
             
-            if "brightness" in args:
-                turn_on_params["brightness"] = args["brightness"]
-            elif "brightness_pct" in args:
-                turn_on_params["brightness_pct"] = args["brightness_pct"]
+            # Converter brightness_pct para brightness (0-255)
+            if "brightness_pct" in args:
+                brightness = int(args["brightness_pct"] * 255 / 100)
+            elif "brightness" in args:
+                brightness = args["brightness"]
                 
+            # Usar rgb_color se fornecido
             if "rgb_color" in args:
-                turn_on_params["rgb_color"] = args["rgb_color"]
-            elif "kelvin" in args:
-                turn_on_params["kelvin"] = args["kelvin"]
-            elif "color_name" in args:
-                turn_on_params["color_name"] = args["color_name"]
+                color = args["rgb_color"]
             
-            result = await self.ha_client.turn_on_light(**turn_on_params)
+            # Para kelvin e color_name, vamos precisar converter ou passar como atributos extras
+            extra_params = {}
+            if "kelvin" in args:
+                extra_params["kelvin"] = args["kelvin"]
+            if "color_name" in args:
+                extra_params["color_name"] = args["color_name"]
+            
+            result = await self.ha_client.control_light(
+                entity_id=entity_id, 
+                state="on", 
+                brightness=brightness, 
+                color=color,
+                **extra_params
+            )
             
         elif action == "turn_off":
-            result = await self.ha_client.turn_off_light(entity_id)
+            result = await self.ha_client.control_light(entity_id, "off")
             
         elif action == "toggle":
-            result = await self.ha_client.toggle_light(entity_id)
+            result = await self.ha_client.control_light(entity_id, "toggle")
         
         return {
             "entity_id": entity_id,
@@ -146,16 +159,17 @@ class HomeAssistantFunctionHandler:
         }
     
     async def _handle_switch_control(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Handler para controle de interruptores"""
+        """Handler para controle de interruptores - Adaptado para métodos da Tarefa 3"""
         entity_id = args["entity_id"]
         action = args["action"]
         
+        # Usar o método control_switch da Tarefa 3: control_switch(entity_id, state)
         if action == "turn_on":
-            result = await self.ha_client.turn_on_switch(entity_id)
+            result = await self.ha_client.control_switch(entity_id, "on")
         elif action == "turn_off":
-            result = await self.ha_client.turn_off_switch(entity_id)
+            result = await self.ha_client.control_switch(entity_id, "off")
         elif action == "toggle":
-            result = await self.ha_client.toggle_switch(entity_id)
+            result = await self.ha_client.control_switch(entity_id, "toggle")
         
         return {
             "entity_id": entity_id,
@@ -165,9 +179,10 @@ class HomeAssistantFunctionHandler:
         }
     
     async def _handle_scene_activation(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Handler para ativação de cenas"""
+        """Handler para ativação de cenas - Adaptado para métodos da Tarefa 3"""
         entity_id = args["entity_id"]
         
+        # Usar o método activate_scene da Tarefa 3: activate_scene(scene_id)
         result = await self.ha_client.activate_scene(entity_id)
         
         return {
@@ -178,20 +193,25 @@ class HomeAssistantFunctionHandler:
         }
     
     async def _handle_climate_control(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Handler para controle de clima"""
+        """Handler para controle de clima - Adaptado para métodos da Tarefa 3"""
         entity_id = args["entity_id"]
         action = args["action"]
         
+        # Usar o método control_climate da Tarefa 3
         if action == "turn_on":
-            result = await self.ha_client.turn_on_climate(entity_id)
+            result = await self.ha_client.control_climate(entity_id, action="turn_on")
         elif action == "turn_off":
-            result = await self.ha_client.turn_off_climate(entity_id)
+            result = await self.ha_client.control_climate(entity_id, action="turn_off")
         elif action == "set_temperature":
             temperature = args["temperature"]
-            result = await self.ha_client.set_climate_temperature(entity_id, temperature)
+            result = await self.ha_client.control_climate(
+                entity_id, action="set_temperature", temperature=temperature
+            )
         elif action == "set_hvac_mode":
             hvac_mode = args["hvac_mode"]
-            result = await self.ha_client.set_climate_hvac_mode(entity_id, hvac_mode)
+            result = await self.ha_client.control_climate(
+                entity_id, action="set_hvac_mode", hvac_mode=hvac_mode
+            )
         
         return {
             "entity_id": entity_id,
@@ -201,29 +221,32 @@ class HomeAssistantFunctionHandler:
         }
     
     async def _handle_media_control(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Handler para controle de mídia"""
+        """Handler para controle de mídia - Adaptado para métodos da Tarefa 3"""
         entity_id = args["entity_id"]
         action = args["action"]
         
+        # Usar o método control_media_player da Tarefa 3
         if action == "play":
-            result = await self.ha_client.media_play(entity_id)
+            result = await self.ha_client.control_media_player(entity_id, action="play")
         elif action == "pause":
-            result = await self.ha_client.media_pause(entity_id)
+            result = await self.ha_client.control_media_player(entity_id, action="pause")
         elif action == "stop":
-            result = await self.ha_client.media_stop(entity_id)
+            result = await self.ha_client.control_media_player(entity_id, action="stop")
         elif action == "next_track":
-            result = await self.ha_client.media_next_track(entity_id)
+            result = await self.ha_client.control_media_player(entity_id, action="next_track")
         elif action == "previous_track":
-            result = await self.ha_client.media_previous_track(entity_id)
+            result = await self.ha_client.control_media_player(entity_id, action="previous_track")
         elif action == "volume_up":
-            result = await self.ha_client.media_volume_up(entity_id)
+            result = await self.ha_client.control_media_player(entity_id, action="volume_up")
         elif action == "volume_down":
-            result = await self.ha_client.media_volume_down(entity_id)
+            result = await self.ha_client.control_media_player(entity_id, action="volume_down")
         elif action == "volume_set":
             volume_level = args["volume_level"]
-            result = await self.ha_client.media_set_volume(entity_id, volume_level)
+            result = await self.ha_client.control_media_player(
+                entity_id, action="volume_set", volume_level=volume_level
+            )
         elif action == "mute":
-            result = await self.ha_client.media_mute(entity_id)
+            result = await self.ha_client.control_media_player(entity_id, action="mute")
         
         return {
             "entity_id": entity_id,
@@ -233,10 +256,11 @@ class HomeAssistantFunctionHandler:
         }
     
     async def _handle_sensor_query(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Handler para consulta de sensores"""
+        """Handler para consulta de sensores - Compatível com Tarefa 3"""
         entity_id = args["entity_id"]
         
-        result = await self.ha_client.get_sensor_state(entity_id)
+        # Usar get_entity_state que já existe na Tarefa 3
+        result = await self.ha_client.get_entity_state(entity_id)
         
         return {
             "entity_id": entity_id,
@@ -249,9 +273,10 @@ class HomeAssistantFunctionHandler:
         }
     
     async def _handle_entity_state_query(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Handler para consulta de estado de entidades"""
+        """Handler para consulta de estado de entidades - Compatível com Tarefa 3"""
         entity_id = args["entity_id"]
         
+        # Usar get_entity_state que já existe na Tarefa 3
         result = await self.ha_client.get_entity_state(entity_id)
         
         return {
@@ -265,11 +290,32 @@ class HomeAssistantFunctionHandler:
         }
     
     async def _handle_list_entities(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Handler para listagem de entidades"""
+        """Handler para listagem de entidades - Precisa ser implementado na Tarefa 3"""
         domain = args["domain"]
         area = args.get("area")
         
-        result = await self.ha_client.list_entities(domain, area)
+        # Este método precisa ser implementado na Tarefa 3
+        # Vamos usar get_all_states() e filtrar por domínio como fallback
+        try:
+            if hasattr(self.ha_client, 'list_entities'):
+                result = await self.ha_client.list_entities(domain, area)
+            else:
+                # Fallback: usar get_all_states e filtrar
+                all_states = await self.ha_client.get_all_states()
+                entities = [
+                    entity for entity in all_states 
+                    if entity.get("entity_id", "").startswith(f"{domain}.")
+                ]
+                if area:
+                    # Filtrar por área se especificada
+                    entities = [
+                        entity for entity in entities
+                        if entity.get("attributes", {}).get("area_id") == area
+                    ]
+                result = entities
+        except Exception as e:
+            logger.warning(f"Erro ao listar entidades: {e}. Usando fallback.")
+            result = []
         
         return {
             "domain": domain,
@@ -280,19 +326,22 @@ class HomeAssistantFunctionHandler:
         }
     
     async def _handle_cover_control(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Handler para controle de coberturas"""
+        """Handler para controle de coberturas - Adaptado para métodos da Tarefa 3"""
         entity_id = args["entity_id"]
         action = args["action"]
         
+        # Usar o método control_cover da Tarefa 3
         if action == "open_cover":
-            result = await self.ha_client.open_cover(entity_id)
+            result = await self.ha_client.control_cover(entity_id, action="open")
         elif action == "close_cover":
-            result = await self.ha_client.close_cover(entity_id)
+            result = await self.ha_client.control_cover(entity_id, action="close")
         elif action == "stop_cover":
-            result = await self.ha_client.stop_cover(entity_id)
+            result = await self.ha_client.control_cover(entity_id, action="stop")
         elif action == "set_cover_position":
             position = args["position"]
-            result = await self.ha_client.set_cover_position(entity_id, position)
+            result = await self.ha_client.control_cover(
+                entity_id, action="set_position", position=position
+            )
         
         return {
             "entity_id": entity_id,
@@ -302,14 +351,15 @@ class HomeAssistantFunctionHandler:
         }
     
     async def _handle_lock_control(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Handler para controle de fechaduras"""
+        """Handler para controle de fechaduras - Adaptado para métodos da Tarefa 3"""
         entity_id = args["entity_id"]
         action = args["action"]
         
+        # Usar call_service diretamente para locks (método genérico da Tarefa 3)
         if action == "lock":
-            result = await self.ha_client.lock(entity_id)
+            result = await self.ha_client.call_service("lock", "lock", {"entity_id": entity_id})
         elif action == "unlock":
-            result = await self.ha_client.unlock(entity_id)
+            result = await self.ha_client.call_service("lock", "unlock", {"entity_id": entity_id})
         
         return {
             "entity_id": entity_id,
