@@ -1,0 +1,352 @@
+# PRD \- Controle do Home Assistant com Gemini Live API e Interface Vue3
+
+## 1\. Visão Geral do Produto
+
+### 1.1 Objetivo
+
+Desenvolver uma Prova de Conceito (POC) que permita controlar dispositivos e obter informações do Home Assistant através de comandos de voz processados pela Gemini Live API do Google, com uma interface de usuário moderna desenvolvida em Vue3.
+
+### 1.2 Problema a Resolver
+
+Necessidade de interfaces de voz mais naturais e conversacionais para automação residencial, indo além dos sistemas de comando e resposta tradicionais, com maior controle sobre privacidade e personalização.
+
+### 1.3 Proposta de Valor
+
+- Interface de voz natural e conversacional para Home Assistant  
+- Streaming de áudio bidirecional em tempo real  
+- Function calling avançado com Gemini Live API  
+- UI responsiva e intuitiva  
+- Maior granularidade sobre privacidade comparado a soluções comerciais
+
+## 2\. Objetivos e KPIs
+
+### 2.1 Objetivos Técnicos Principais
+
+1. Demonstrar streaming de áudio bidirecional entre UI Vue3, backend Python e Gemini Live API  
+2. Implementar function calling robusto para traduzir comandos de voz em ações do Home Assistant  
+3. Garantir comunicação segura e confiável com Home Assistant via API REST  
+4. Desenvolver interface de usuário intuitiva em Vue3  
+5. Estabelecer arquitetura modular e escalável
+
+### 2.2 Critérios de Sucesso
+
+- Ciclo completo voz-para-voz funcionando: usuário fala → processamento → ação no HA → resposta de áudio  
+- Latência de resposta \< 3 segundos para comandos simples  
+- Taxa de sucesso \> 80% para comandos básicos de controle  
+- Interface responsiva e intuitiva
+
+## 3\. Público-Alvo
+
+### 3.1 Usuário Primário
+
+- Desenvolvedores e entusiastas de Home Assistant  
+- Usuários que buscam maior privacidade em assistentes de voz  
+- Early adopters de tecnologias de automação residencial
+
+### 3.2 Personas
+
+**Desenvolvedor HA Avançado:**
+
+- Quer controle granular sobre automação  
+- Valoriza privacidade e personalização  
+- Confortável com tecnologias emergentes
+
+**Usuário Doméstico Tech-Savvy:**
+
+- Quer controle de voz natural para sua casa inteligente  
+- Preocupado com privacidade de dados  
+- Busca alternativas aos assistentes comerciais
+
+## 4\. Requisitos Funcionais
+
+### 4.1 Funcionalidades Core
+
+#### RF1 \- Captura e Processamento de Voz
+
+- Capturar áudio do microfone via Web Audio API  
+- Transmitir áudio em tempo real para backend via WebSocket  
+- Formato: PCM 16kHz mono conforme exigido pelo Gemini  
+- Indicador visual de captura ativa
+
+#### RF2 \- Integração com Gemini Live API
+
+- Autenticação segura com Google Cloud  
+- Estabelecer conexão WebSocket persistente  
+- Configurar sessão com function calling  
+- Processar transcrições em tempo real  
+- Gerenciar function calls para Home Assistant
+
+#### RF3 \- Controle do Home Assistant
+
+- Autenticação via Long-Lived Access Tokens (LLATs)  
+- Controlar luzes (ligar/desligar, brilho, cor)  
+- Controlar interruptores  
+- Obter estado de sensores  
+- Ativar cenas  
+- Controlar termostatos
+
+#### RF4 \- Interface de Usuário Vue3
+
+- Botão de microfone para iniciar/parar captura  
+- Área de transcrição em tempo real  
+- Área de resposta/status do sistema  
+- Visualizador de atividade de voz  
+- Gerenciamento de estado com Pinia
+
+#### RF5 \- Reprodução de Áudio
+
+- Receber chunks de áudio do backend  
+- Decodificar e reproduzir respostas de áudio do Gemini
+
+### 4.2 Function Calling Específicas
+
+#### RF6 \- Funções de Controle de Dispositivos
+
+**controlar\_luz(entity\_id, state, brightness?, color?)**
+
+- Ligar/desligar luzes  
+- Ajustar brilho (0-255)  
+- Mudar cor (RGB)
+
+**controlar\_interruptor(entity\_id, state)**
+
+- Ligar/desligar interruptores
+
+**obter\_estado\_entidade(entity\_id)**
+
+- Consultar estado atual de qualquer entidade
+
+**ativar\_cena(scene\_id)**
+
+- Ativar cenas predefinidas
+
+**obter\_temperatura(entity\_id)**
+
+- Obter temperatura de sensores/termostatos
+
+## 5\. Requisitos Não-Funcionais
+
+### 5.1 Performance
+
+- Latência de áudio \< 300ms  
+- Tempo de resposta para comandos simples \< 3s  
+- Suporte a sessões de até 10 minutos (limitação Gemini)
+
+### 5.2 Segurança
+
+- Chaves API armazenadas como variáveis de ambiente  
+- Validação de entrada no backend (Pydantic)  
+- Sanitização de saída no frontend
+
+### 5.3 Usabilidade
+
+- Interface intuitiva, responsiva com uma experiência moderna e inovadora  
+- Feedback visual claro do status da conexão  
+- Tratamento de erros com mensagens compreensíveis  
+- Reconexão automática em caso de falha
+
+### 5.4 Confiabilidade
+
+- Tratamento robusto de erros  
+- Logging detalhado para depuração  
+- Reconexão automática de WebSockets  
+- Fallback para comandos via texto
+
+## 6\. Stack Tecnológica
+
+### 6.1 Backend
+
+- **Linguagem:** Python 3.11+  
+- **Framework:** FastAPI (suporte nativo a async/await)  
+- **Servidor:** Uvicorn (ASGI)  
+- **Cliente HTTP:** httpx (assíncrono)  
+- **Gemini SDK:** google-genai  
+- **WebSockets:** websockets (via FastAPI)  
+- **Configuração:** python-dotenv, Pydantic
+
+### 6.2 Frontend
+
+- **Framework:** Vue3 com Composition API  
+- **Linguagem:** TypeScript  
+- **Estado:** Pinia  
+- **Roteamento:** Vue Router  
+- **WebSocket:** WebSockets nativos  
+- **Áudio:** Web Audio API nativa (audio em formato PCM)  
+- **Visualização:** vue-audio-visual
+
+### 6.3 APIs Externas
+
+- **Google Gemini Live API:** Modelo "Gemini 2.5 Flash with Live API native Audio" (gemini-2.5-flash-preview-native-audio-dialog)  
+- **Home Assistant REST API:** Comunicação via LLATs
+
+## 7\. Arquitetura do Sistema
+
+### 7.1 Componentes Principais
+
+1. **Frontend Vue3:** Interface de usuário e captura de áudio  
+2. **Backend FastAPI:** Orquestrador central  
+3. **Módulo Gemini Client:** Interface com Gemini Live API  
+4. **Módulo HA Client:** Interface com Home Assistant API  
+5. **WebSocket Layer:** Comunicação em tempo real
+
+### 7.2 Fluxo de Dados
+
+Usuário → Frontend Vue3 → Backend Python → Gemini Live API
+
+                ↓              ↓
+
+        Reprodução de Áudio ←   ← Home Assistant API
+
+## 8\. Fases de Desenvolvimento
+
+### 8.1 Fase 1: Configuração Base (Sprint 1\)
+
+- Estruturar projetos backend e frontend  
+- Estabelecer comunicação WebSocket básica  
+- Configurar ambiente de desenvolvimento
+
+### 8.2 Fase 2: Conectividade Gemini e HA (Sprint 2\)
+
+- Implementar autenticação com Gemini  
+- Validar function calling com texto  
+- Implementar comunicação com Home Assistant  
+- Teste de ciclo completo via texto
+
+### 8.3 Fase 3: Áudio Bidirecional (Sprint 3\)
+
+- Captura de áudio no frontend  
+- Streaming para Gemini Live API  
+- Reprodução de respostas de áudio  
+- Teste de ciclo voz-para-voz completo
+
+### 8.4 Fase 4: Refinamento e Expansão (Sprint 4\)
+
+- Adicionar mais funções do Home Assistant  
+- Melhorar tratamento de erros  
+- Otimizar UX/UI  
+- Testes abrangentes
+
+## 9\. Configuração e Ambiente
+
+### 9.1 Variáveis de Ambiente Necessárias
+
+GEMINI\_API\_KEY="sua\_chave\_gemini"
+
+HA\_URL="http://homeassistant.local:8123"
+
+HA\_LLAT="seu\_token\_home\_assistant"
+
+AUDIO\_SAMPLE\_RATE\_GEMINI=16000
+
+AUDIO\_CHANNELS\_GEMINI=1
+
+### 9.2 Estrutura de Diretórios
+
+poc\_gemini\_ha/
+
+├── backend/
+
+│   ├── poc\_app/
+
+│   │   ├── main.py
+
+│   │   ├── gemini\_client/
+
+│   │   ├── ha\_client/
+
+│   │   ├── core/
+
+│   │   └── models/
+
+│   ├── tests/
+
+│   ├── .env
+
+│   └── requirements.txt
+
+├── frontend/
+
+│   ├── src/
+
+│   │   ├── components/
+
+│   │   ├── composables/
+
+│   │   ├── store/
+
+│   │   └── views/
+
+│   ├── tests/
+
+│   └── package.json
+
+└── README.md
+
+## 10\. Riscos e Mitigações
+
+### 10.1 Riscos Técnicos
+
+- **Latência de rede:** Implementar buffering e fallbacks  
+- **Limitações do Gemini Live API:** Monitorar quotas e implementar retry logic  
+- **Compatibilidade de áudio:** Testes extensivos em diferentes navegadores  
+- **Segurança de tokens:** Implementar rotação segura de credenciais
+
+### 10.2 Riscos de Projeto
+
+- **Mudanças na API Gemini:** Monitorar documentação e changelogs  
+- **Complexidade de integração:** Desenvolvimento incremental e testes frequentes
+
+## 11\. Critérios de Aceitação
+
+### 11.1 Funcionalidades Mínimas Viáveis
+
+- [ ] Usuário pode falar um comando simples (ex: "ligue a luz da sala")  
+- [ ] Sistema entende a melhor forma de executar o comando no Home Assistant  
+- [ ] Sistema transcreve e processa o comando  
+- [ ] Home Assistant executa a ação solicitada  
+- [ ] Sistema fornece confirmação de áudio ao usuário  
+- [ ] Interface mostra transcrição e status em tempo real
+
+### 11.2 Casos de Teste Principais
+
+1. **Controle básico de luz:** "Ligue a luz da cozinha"  
+2. **Consulta de estado:** "Qual a temperatura da sala?"  
+3. **Ativação de cena:** "Ative a cena 'modo filme'"  
+4. **Tratamento de erro:** Comando para dispositivo inexistente  
+5. **Reconexão:** Recuperação após perda de conexão
+
+## 12\. Recursos e Referências
+
+### 12.1 Documentação Técnica
+
+- Google Gemini Live API: [https://ai.google.dev/gemini-api/docs/live](https://ai.google.dev/gemini-api/docs/live)  
+- Home Assistant REST API: [https://developers.home-assistant.io/docs/api/rest/](https://developers.home-assistant.io/docs/api/rest/)  
+- FastAPI: [https://fastapi.tiangolo.com/](https://fastapi.tiangolo.com/)  
+- Vue3: [https://vuejs.org/](https://vuejs.org/)
+
+### 12.2 Bibliotecas Principais
+
+- google-genai (Python)  
+- FastAPI \+ uvicorn  
+- httpx  
+- Vue3 \+ Pinia \+ TypeScript  
+- Web Audio API
+
+## 13\. Considerações de Produção
+
+### 13.1 Escalabilidade
+
+- Gerenciamento de sessões concorrentes  
+- Cache de estados do Home Assistant
+
+### 13.2 Monitoramento
+
+- Logs estruturados para debugging  
+- Métricas de performance  
+- Alertas para falhas de integração
+
+### 13.3 Deploy
+
+- Containerização com Docker  
+- Configuração para HTTPS/WSS  
+- Variáveis de ambiente seguras
