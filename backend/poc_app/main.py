@@ -1,4 +1,16 @@
 # backend/poc_app/main.py
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Carregar variáveis de ambiente do arquivo .env
+env_path = Path(__file__).parent.parent / '.env'
+if env_path.exists():
+    load_dotenv(env_path)
+    print(f"✅ Arquivo .env carregado: {env_path}")
+else:
+    print(f"⚠️  Arquivo .env não encontrado: {env_path}")
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
@@ -8,8 +20,15 @@ from .core.message_protocol import MessageProtocol
 from .core.error_recovery import HealthStatus
 from .core.performance_monitor import performance_monitor, MetricType
 from .core.structured_logger import websocket_logger, setup_logging
+from .core.app import GeminiHomeAssistantApp
+from .core.exceptions import SessionNotFoundError, AudioProcessingError, IntegrationError
+from .core.config_validator import validate_app_config, ConfigValidator
+from .models.config import ApplicationConfig
 import logging
 import uvicorn
+import asyncio
+import json
+from uuid import uuid4
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -23,6 +42,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Instância de configuração validada
+app_config: Optional[ApplicationConfig] = None
+
 # Criar aplicação FastAPI
 app = FastAPI(
     title="Home Assistant Voice Control POC",
@@ -34,24 +56,65 @@ app = FastAPI(
 # Configurar CORS para permitir conexões do frontend Vue3
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173", "http://localhost:8080"],  # URLs típicas do Vue dev server
+    allow_origins=["http://localhost:3000", "http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "http://localhost:8080"],  # URLs típicas do Vue dev server
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Instanciar o gerenciador WebSocket
+# Instanciar o gerenciador WebSocket (endpoint legado)
 websocket_handler = WebSocketHandler()
+
+# Instanciar a aplicação principal de integração
+gemini_ha_app: Optional[GeminiHomeAssistantApp] = None
 
 @app.on_event("startup")
 async def startup_event():
     """Eventos de inicialização da aplicação"""
+    global gemini_ha_app, app_config
+    
     websocket_logger.system_event("app_startup", "Aplicação FastAPI iniciada")
     logger.info("Aplicação Home Assistant Voice Control POC iniciada")
+    
+    # Validar configuração na inicialização
+    try:
+        logger.info("🔧 Validando configuração da aplicação...")
+        app_config = await validate_app_config(skip_connectivity=True)  # Skip connectivity para evitar delay no startup
+        logger.info("✅ Configuração validada com sucesso")
+    except SystemExit:
+        logger.error("❌ Configuração inválida - aplicação será encerrada")
+        return
+    except Exception as e:
+        logger.error(f"❌ Erro inesperado na validação: {e}")
+        return
+    
+    # Inicializar a aplicação principal usando configuração validada
+    try:
+        gemini_ha_app = GeminiHomeAssistantApp(
+            gemini_api_key=app_config.gemini.api_key,
+            ha_url=app_config.home_assistant.url,
+            ha_token=app_config.home_assistant.access_token,
+            session_timeout_minutes=app_config.session.max_session_age_minutes,
+            cleanup_interval_seconds=app_config.session.cleanup_interval_seconds
+        )
+        await gemini_ha_app.start()
+        logger.info("GeminiHomeAssistantApp inicializada com sucesso")
+    except Exception as e:
+        logger.error(f"Erro ao inicializar GeminiHomeAssistantApp: {e}")
+        gemini_ha_app = None
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Eventos de encerramento da aplicação"""
+    global gemini_ha_app
+    
+    if gemini_ha_app:
+        try:
+            await gemini_ha_app.stop()
+            logger.info("GeminiHomeAssistantApp finalizada com sucesso")
+        except Exception as e:
+            logger.error(f"Erro ao finalizar GeminiHomeAssistantApp: {e}")
+    
     performance_monitor.stop_monitoring()
     websocket_logger.system_event("app_shutdown", "Aplicação FastAPI encerrada")
     logger.info("Aplicação Home Assistant Voice Control POC encerrada")
@@ -72,12 +135,23 @@ async def health_check():
     error_recovery = websocket_handler.get_error_recovery()
     health_status = error_recovery.get_health_status()
     
+    # Verificar status da aplicação integrada
+    integration_status = "available" if gemini_ha_app else "unavailable"
+    integration_stats = None
+    if gemini_ha_app:
+        try:
+            integration_stats = gemini_ha_app.get_session_stats()
+        except Exception as e:
+            logger.warning(f"Erro ao obter stats da integração: {e}")
+            integration_status = "error"
+    
     return {
         "status": health_status.value,
         "system_health": {
             "overall": health_status.value,
             "circuit_breaker": error_recovery.circuit_state.value,
-            "active_connections": websocket_handler.get_connection_count()
+            "active_connections": websocket_handler.get_connection_count(),
+            "integration_status": integration_status
         },
         "services": {
             "gemini_api_configured": bool(settings.GEMINI_API_KEY and settings.GEMINI_API_KEY != "sua_chave_gemini_aqui"),
@@ -87,7 +161,11 @@ async def health_check():
             "sample_rate": settings.AUDIO_SAMPLE_RATE_GEMINI,
             "channels": settings.AUDIO_CHANNELS_GEMINI
         },
-        "websocket_connections": websocket_handler.get_connection_count()
+        "websocket_connections": websocket_handler.get_connection_count(),
+        "integration": {
+            "status": integration_status,
+            "stats": integration_stats
+        }
     }
 
 
@@ -594,6 +672,251 @@ async def get_websocket_protocol():
     }
 
 
+@app.get("/integration/stats")
+async def get_integration_stats():
+    """
+    Endpoint para obter estatísticas da aplicação integrada.
+    Retorna informações sobre sessões ativas, métricas de processamento e status.
+    """
+    if not gemini_ha_app:
+        return {
+            "status": "unavailable",
+            "message": "GeminiHomeAssistantApp não está inicializada",
+            "stats": None
+        }
+    
+    try:
+        stats = gemini_ha_app.get_session_stats()
+        return {
+            "status": "active",
+            "timestamp": datetime.now().isoformat(),
+            "stats": stats,
+            "configuration": {
+                "session_timeout_minutes": gemini_ha_app.session_timeout_minutes,
+                "cleanup_interval_seconds": gemini_ha_app.cleanup_interval_seconds
+            }
+        }
+    except Exception as e:
+        logger.error(f"Erro ao obter estatísticas: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """
+    Endpoint WebSocket principal integrado com Gemini e Home Assistant.
+    
+    Este endpoint oferece uma interface simplificada que integra automaticamente:
+    - Captura e processamento de áudio via Gemini Live API
+    - Execução de comandos do Home Assistant
+    - Retorno de respostas em áudio
+    
+    Protocolo de mensagens:
+    - Envio inicial: JSON com tipo 'status' para inicialização
+    - Envio de áudio: dados de áudio em formato binário (streaming)
+    - Recebimento: JSON com transcription/function_result e áudio binário como resposta
+    """
+    if not gemini_ha_app:
+        logger.error("GeminiHomeAssistantApp não está disponível")
+        await websocket.close(code=1011, reason="Serviço não disponível")
+        return
+    
+    await websocket.accept()
+    session_id = None
+    client_initialized = False
+    
+    try:
+        # Criar sessão única para esta conexão
+        session_id = await gemini_ha_app.create_session()
+        logger.info(f"Nova conexão WebSocket estabelecida com sessão {session_id}")
+        
+        # Enviar confirmação de conexão
+        await websocket.send_json({
+            "type": "connection_established",
+            "session_id": session_id,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+        # Buffer para acumular chunks de áudio
+        audio_buffer = bytearray()
+        last_processing_time = datetime.now()
+        processing_interval = 2.0  # Processar a cada 2 segundos de áudio
+        
+        while True:
+            try:
+                # Receber dados (pode ser JSON ou binário)
+                raw_data = await websocket.receive()
+                
+                # Verificar se é mensagem de texto (JSON) ou dados binários
+                if raw_data.get("type") == "websocket.receive":
+                    if "text" in raw_data and not client_initialized:
+                        # Mensagem de inicialização JSON
+                        try:
+                            message = json.loads(raw_data["text"])
+                            if message.get("type") == "status" and message.get("content") == "client_connected":
+                                client_initialized = True
+                                logger.info(f"Cliente inicializado para sessão {session_id}")
+                                
+                                # Enviar mensagem de boas-vindas
+                                await websocket.send_json({
+                                    "type": "response",
+                                    "content": "Olá! Bem-vindo ao assistente de voz do Home Assistant. Como posso ajudá-lo hoje?",
+                                    "timestamp": datetime.now().isoformat()
+                                })
+                                
+                                # Gerar e enviar áudio de boas-vindas usando função com WebSocket streaming
+                                try:
+                                    welcome_result = await gemini_ha_app.send_welcome_message_with_websocket(session_id, websocket)
+                                    
+                                    # Enviar resposta de texto atualizada se disponível
+                                    if welcome_result.get("response_text"):
+                                        await websocket.send_json({
+                                            "type": "response",
+                                            "content": welcome_result["response_text"],
+                                            "timestamp": datetime.now().isoformat()
+                                        })
+                                    
+                                    # DEPRECATED: Audio consolidado removido - agora usa streaming via chunks
+                                    # O áudio já é enviado via streaming chunks no método send_welcome_message_with_websocket
+                                    # if welcome_result.get("audio_response"):
+                                    #     await websocket.send_json({
+                                    #         "type": "audio_response",
+                                    #         "has_audio": True,
+                                    #         "timestamp": datetime.now().isoformat()
+                                    #     })
+                                    #     await websocket.send_bytes(welcome_result["audio_response"])
+                                except Exception as e:
+                                    logger.warning(f"Não foi possível gerar áudio de boas-vindas: {e}")
+                                    # Não é um erro crítico, continuar sem áudio
+                                
+                                continue
+                            elif message.get("type") == "status" and message.get("content") == "client_disconnecting":
+                                logger.info(f"Cliente desconectando sessão {session_id}")
+                                break
+                        except json.JSONDecodeError:
+                            logger.warning("Mensagem JSON inválida recebida durante inicialização")
+                            continue
+                    elif "bytes" in raw_data and client_initialized:
+                        # Dados de áudio - processar normalmente
+                        audio_chunk = raw_data["bytes"]
+                        logger.debug(f"🎤 [AUDIO-IN] Recebendo chunk de áudio: {len(audio_chunk)} bytes")
+                        
+                        # Adicionar ao buffer
+                        audio_buffer.extend(audio_chunk)
+                        
+                        # Verificar se é hora de processar o áudio acumulado
+                        now = datetime.now()
+                        time_since_last_processing = (now - last_processing_time).total_seconds()
+                        
+                        # Processar quando tiver dados suficientes ou após intervalo de tempo
+                        min_buffer_size = 16000 * 2 * 1  # 1 segundo de áudio (16kHz, 16-bit)
+                        should_process = (len(audio_buffer) >= min_buffer_size and 
+                                        time_since_last_processing >= processing_interval)
+                        
+                        if should_process:
+                            try:
+                                # Processar áudio acumulado com streaming via WebSocket
+                                logger.info(f"🔄 [PROCESSING] Iniciando processamento de {len(audio_buffer)} bytes de áudio (sessão: {session_id})")
+                                result = await gemini_ha_app.process_audio_with_websocket(session_id, bytes(audio_buffer), websocket)
+                                logger.info(f"✅ [PROCESSING] Processamento concluído. Resultado: {type(result)}")
+                                
+                                # Limpar buffer após processamento
+                                audio_buffer.clear()
+                                last_processing_time = now
+                                
+                                # Enviar transcrição se disponível
+                                if result.get("transcription"):
+                                    await websocket.send_json({
+                                        "type": "transcription",
+                                        "content": result["transcription"],
+                                        "timestamp": datetime.now().isoformat()
+                                    })
+                                
+                                # Enviar resultado de função se disponível
+                                if result.get("function_result"):
+                                    await websocket.send_json({
+                                        "type": "function_result",
+                                        "result": result["function_result"],
+                                        "timestamp": datetime.now().isoformat()
+                                    })
+                                
+                                # DEPRECATED: Audio consolidado removido - agora usa streaming via chunks
+                                # O áudio já é enviado via streaming chunks no método process_audio_with_websocket
+                                # if result.get("audio_response"):
+                                #     await websocket.send_json({
+                                #         "type": "audio_response",
+                                #         "has_audio": True,
+                                #         "timestamp": datetime.now().isoformat()
+                                #     })
+                                #     await websocket.send_bytes(result["audio_response"])
+                                    
+                            except SessionNotFoundError as e:
+                                logger.error(f"Erro de sessão: {e}")
+                                await websocket.send_json({
+                                    "type": "error",
+                                    "error_code": "SESSION_ERROR",
+                                    "message": "Sessão não encontrada, reconectando...",
+                                    "timestamp": datetime.now().isoformat()
+                                })
+                                # Tentar recriar a sessão
+                                session_id = await gemini_ha_app.create_session()
+                                
+                            except AudioProcessingError as e:
+                                logger.warning(f"Erro de processamento de áudio: {e}")
+                                await websocket.send_json({
+                                    "type": "error",
+                                    "error_code": "AUDIO_PROCESSING_ERROR",
+                                    "message": "Erro no processamento de áudio - continuando...",
+                                    "timestamp": datetime.now().isoformat()
+                                })
+                                # Limpar buffer e continuar
+                                audio_buffer.clear()
+                                
+                            except Exception as e:
+                                logger.error(f"Erro inesperado no processamento: {e}")
+                                await websocket.send_json({
+                                    "type": "error",
+                                    "error_code": "PROCESSING_ERROR", 
+                                    "message": f"Erro interno: {str(e)}",
+                                    "timestamp": datetime.now().isoformat()
+                                })
+                                # Limpar buffer e continuar
+                                audio_buffer.clear()
+                        
+                        # Enviar confirmação de recebimento do chunk
+                        if len(audio_buffer) % (8192 * 4) == 0:  # A cada ~32KB
+                            await websocket.send_json({
+                                "type": "audio_received",
+                                "buffer_size": len(audio_buffer),
+                                "timestamp": datetime.now().isoformat()
+                            })
+                    elif "bytes" in raw_data and not client_initialized:
+                        # Dados de áudio recebidos antes da inicialização - ignorar
+                        logger.warning("Dados de áudio recebidos antes da inicialização do cliente")
+                        continue
+                elif raw_data.get("type") == "websocket.disconnect":
+                    logger.info(f"Cliente desconectado (sessão: {session_id})")
+                    break
+                else:
+                    continue  # Ignorar outros tipos de mensagem
+                    
+            except Exception as e:
+                logger.error(f"Erro ao processar dados: {e}")
+                break
+                
+    except WebSocketDisconnect:
+        logger.info(f"Cliente desconectado (sessão: {session_id})")
+        
+    except Exception as e:
+        logger.error(f"Erro na conexão WebSocket: {e}")
+        
+    finally:
+        # Limpar sessão ao finalizar conexão
+        if session_id and gemini_ha_app:
+            await gemini_ha_app.close_session(session_id)
+            logger.info(f"Sessão {session_id} finalizada")
+
+
 @app.websocket("/ws/voice")
 async def websocket_voice_endpoint(websocket: WebSocket):
     """
@@ -604,6 +927,223 @@ async def websocket_voice_endpoint(websocket: WebSocket):
     Inclui sistema robusto de tratamento de erros e recuperação.
     """
     await websocket_handler.handle_connection(websocket)
+
+
+@app.get("/config/status")
+async def get_config_status():
+    """Endpoint para verificar status da configuração."""
+    global app_config
+    
+    if not app_config:
+        return {
+            "status": "not_validated",
+            "message": "Configuração não foi validada durante a inicialização",
+            "valid": False
+        }
+    
+    # Executar validação completa (incluindo conectividade)
+    try:
+        validator = ConfigValidator(app_config)
+        results = await validator.validate_all(skip_connectivity=False)
+        
+        return {
+            "status": "validated",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "validation_results": results,
+            "config_summary": {
+                "app_name": app_config.app_name,
+                "version": app_config.version,
+                "debug": app_config.debug,
+                "gemini_model": app_config.gemini.model_name,
+                "ha_url": app_config.home_assistant.url,
+                "websocket_port": app_config.websocket.port,
+                "log_level": app_config.logging.level.value
+            }
+        }
+    except Exception as e:
+        logger.error(f"Erro na validação de configuração: {e}")
+        return {
+            "status": "error",
+            "message": f"Erro durante validação: {str(e)}",
+            "valid": False
+        }
+
+
+@app.get("/config/details")
+async def get_config_details():
+    """Endpoint para obter detalhes da configuração (dados não-sensíveis)."""
+    global app_config
+    
+    if not app_config:
+        return {
+            "error": "Configuração não disponível",
+            "message": "Aplicação não foi inicializada corretamente"
+        }
+    
+    return {
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "configuration": app_config.to_dict(),
+        "validation_info": {
+            "config_source": "environment_variables",
+            "validation_time": "startup",
+            "last_validated": datetime.utcnow().isoformat() + "Z"
+        }
+    }
+
+
+@app.post("/config/validate")
+async def validate_config_manual():
+    """Endpoint para validação manual da configuração."""
+    global app_config
+    
+    if not app_config:
+        return {
+            "status": "error",
+            "message": "Configuração não foi inicializada",
+            "valid": False
+        }
+    
+    try:
+        validator = ConfigValidator(app_config)
+        results = await validator.validate_all(skip_connectivity=False)
+        
+        return {
+            "status": "validated",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "validation_results": results,
+            "valid": results["config_structure"]["valid"] and 
+                    results["environment_variables"]["valid"] and 
+                    results["connectivity"]["valid"]
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Erro durante validação: {str(e)}",
+            "valid": False
+        }
+
+
+# ============================================================
+# ENDPOINTS DE GERENCIAMENTO DE SESSÕES
+# ============================================================
+
+@app.get("/sessions/stats")
+async def get_session_statistics():
+    """Endpoint para obter estatísticas detalhadas das sessões ativas."""
+    try:
+        stats = gemini_ha_app.get_session_stats()
+        return {
+            "status": "success",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "statistics": stats
+        }
+    except Exception as e:
+        logger.error(f"Error getting session stats: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get session statistics: {str(e)}")
+
+@app.get("/sessions/health")
+async def get_session_health_report():
+    """Endpoint para obter relatório de saúde das sessões."""
+    try:
+        health_report = gemini_ha_app.get_session_health_report()
+        return {
+            "status": "success",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "health_report": health_report
+        }
+    except Exception as e:
+        logger.error(f"Error getting session health report: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get health report: {str(e)}")
+
+@app.get("/sessions/{session_id}")
+async def get_session_details(session_id: str):
+    """Endpoint para obter detalhes de uma sessão específica."""
+    try:
+        session_details = gemini_ha_app.get_session_by_id(session_id)
+        if session_details is None:
+            raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+        
+        return {
+            "status": "success",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "session": session_details
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting session details: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get session details: {str(e)}")
+
+@app.post("/sessions/cleanup")
+async def manual_session_cleanup(
+    max_age_minutes: Optional[int] = Query(None, description="Idade máxima das sessões em minutos"),
+    max_idle_minutes: Optional[int] = Query(None, description="Tempo máximo de inatividade em minutos"),
+    force_unhealthy: bool = Query(False, description="Forçar limpeza de sessões não saudáveis")
+):
+    """Endpoint para limpeza manual de sessões."""
+    try:
+        cleanup_results = await gemini_ha_app.cleanup_old_sessions(max_age_minutes, max_idle_minutes)
+        
+        if force_unhealthy:
+            unhealthy_cleanup = await gemini_ha_app.force_cleanup_unhealthy_sessions()
+            cleanup_results["unhealthy_cleanup"] = unhealthy_cleanup
+        
+        return {
+            "status": "success",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "cleanup_results": cleanup_results
+        }
+    except Exception as e:
+        logger.error(f"Error during manual cleanup: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to cleanup sessions: {str(e)}")
+
+@app.post("/sessions/optimize")
+async def optimize_sessions():
+    """Endpoint para otimização completa das sessões."""
+    try:
+        optimization_results = await gemini_ha_app.optimize_sessions()
+        return {
+            "status": "success",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "optimization_results": optimization_results
+        }
+    except Exception as e:
+        logger.error(f"Error during session optimization: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to optimize sessions: {str(e)}")
+
+@app.delete("/sessions/{session_id}")
+async def close_session_endpoint(session_id: str):
+    """Endpoint para fechar uma sessão específica."""
+    try:
+        success = await gemini_ha_app.close_session(session_id)
+        if not success:
+            raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+        
+        return {
+            "status": "success",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "message": f"Session {session_id} closed successfully"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error closing session: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to close session: {str(e)}")
+
+@app.post("/sessions/cleanup/unhealthy")
+async def force_cleanup_unhealthy():
+    """Endpoint para limpeza forçada de sessões não saudáveis."""
+    try:
+        cleanup_results = await gemini_ha_app.force_cleanup_unhealthy_sessions()
+        return {
+            "status": "success",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "cleanup_results": cleanup_results
+        }
+    except Exception as e:
+        logger.error(f"Error during unhealthy session cleanup: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to cleanup unhealthy sessions: {str(e)}")
 
 
 if __name__ == "__main__":

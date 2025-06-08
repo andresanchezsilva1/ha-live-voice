@@ -69,7 +69,7 @@ class WebSocketHandler:
     @log_async_operation("websocket_connection")
     async def handle_connection(self, websocket: WebSocket) -> None:
         """
-        Gerencia uma conexão WebSocket individual com recuperação de erros.
+        Gerencia uma conexão WebSocket individual com tratamento robusto de erros.
         
         Args:
             websocket: Instância do WebSocket a ser gerenciada
@@ -108,26 +108,43 @@ class WebSocketHandler:
                     # Receber dados do frontend Vue3
                     raw_data = await websocket.receive()
                     
-                    # Extrair texto da mensagem WebSocket
+                    # Processar dados baseado no tipo
                     if raw_data.get("type") == "websocket.receive":
                         if "text" in raw_data:
+                            # Mensagem de texto (JSON)
                             message_text = raw_data["text"]
+                            await self.error_recovery.execute_with_recovery(
+                                operation=lambda: self._process_raw_message(websocket, connection_id, message_text),
+                                connection_id=connection_id,
+                                error_context={"operation": "text_message_processing", "data_type": "text"}
+                            )
                         elif "bytes" in raw_data:
-                            message_text = raw_data["bytes"].decode('utf-8')
+                            # Dados binários (áudio PCM)
+                            audio_bytes = raw_data["bytes"]
+                            # Para dados de áudio, não usar recovery se a conexão for fechada
+                            try:
+                                await self._process_audio_data(websocket, connection_id, audio_bytes)
+                            except Exception as audio_error:
+                                # Se erro durante processamento de áudio, verificar se é desconexão
+                                if "disconnect" in str(audio_error).lower() or "closed" in str(audio_error).lower():
+                                    logger.debug(f"Conexão {connection_id} fechada durante processamento de áudio")
+                                    break
+                                else:
+                                    # Outros erros de áudio podem usar recovery
+                                    raise audio_error
                         else:
                             continue  # Ignorar mensagens sem conteúdo
+                    elif raw_data.get("type") == "websocket.disconnect":
+                        # Desconexão explícita detectada
+                        logger.info(f"Desconexão explícita detectada para {connection_id}")
+                        self._handle_connection_cleanup(connection_id, start_time, "explicit_disconnect")
+                        break
                     else:
                         continue  # Ignorar outros tipos de mensagem
                     
-                    # Processar mensagem com recuperação
-                    await self.error_recovery.execute_with_recovery(
-                        operation=lambda: self._process_raw_message(websocket, connection_id, message_text),
-                        connection_id=connection_id,
-                        error_context={"operation": "message_processing", "data_type": type(message_text).__name__}
-                    )
-                    
                 except WebSocketDisconnect:
                     # Desconexão normal - não é um erro
+                    logger.info(f"WebSocketDisconnect detectado para {connection_id}")
                     self._handle_connection_cleanup(connection_id, start_time, "normal_disconnect")
                     websocket_logger.connection_ended(
                         connection_id=connection_id,
@@ -137,10 +154,27 @@ class WebSocketHandler:
                     break
                     
                 except Exception as e:
-                    # Tratar erro de forma robusta
-                    await self._handle_connection_error(websocket, connection_id, e)
-                    self._handle_connection_cleanup(connection_id, start_time, f"error: {type(e).__name__}")
-                    break
+                    error_message = str(e).lower()
+                    
+                    # Verificar se é erro relacionado à desconexão (não deve usar recovery)
+                    if any(keyword in error_message for keyword in [
+                        "disconnect", "closed", "cannot call \"receive\"", 
+                        "websocket.close", "connection closed"
+                    ]):
+                        logger.info(f"Erro de desconexão detectado para {connection_id}: {e}")
+                        self._handle_connection_cleanup(connection_id, start_time, "disconnect_error")
+                        websocket_logger.connection_ended(
+                            connection_id=connection_id,
+                            duration_seconds=time.time() - start_time,
+                            reason="disconnect_error"
+                        )
+                        break
+                    else:
+                        # Outros erros podem usar recovery
+                        logger.warning(f"Erro não relacionado à desconexão para {connection_id}: {e}")
+                        await self._handle_connection_error(websocket, connection_id, e)
+                        self._handle_connection_cleanup(connection_id, start_time, f"error: {type(e).__name__}")
+                        break
                     
         except Exception as e:
             # Erro na conexão inicial
@@ -564,12 +598,27 @@ class WebSocketHandler:
             message: Mensagem estruturada a ser enviada
             processing_time: Tempo de processamento em ms (opcional)
         """
+        # Verificar se a conexão ainda está ativa antes de tentar enviar
+        if not self.connection_manager.is_connection_active(connection_id):
+            logger.debug(f"Conexão {connection_id} não está ativa, não enviando mensagem {message.type}")
+            return
+        
         async def send_operation():
+            # Verificar novamente dentro da operação
+            if not self.connection_manager.is_connection_active(connection_id):
+                logger.debug(f"Conexão {connection_id} foi fechada durante envio")
+                return False
+                
             serialized = self.protocol.serialize_message(message)
             message_size = len(json.dumps(serialized).encode('utf-8'))
             
             success = await self.connection_manager.send_to_connection(connection_id, serialized)
             if not success:
+                # Verificar se falha foi por desconexão (não deve usar recovery)
+                if not self.connection_manager.is_connection_active(connection_id):
+                    logger.debug(f"Falha no envio para {connection_id}: conexão não ativa")
+                    return False
+                    
                 raise ConnectionError(
                     "Falha ao enviar mensagem para conexão",
                     connection_id=connection_id
@@ -592,11 +641,20 @@ class WebSocketHandler:
             
             return success
         
-        await self.error_recovery.execute_with_recovery(
-            operation=send_operation,
-            connection_id=connection_id,
-            error_context={"operation": "send_message", "message_type": message.type}
-        )
+        try:
+            await self.error_recovery.execute_with_recovery(
+                operation=send_operation,
+                connection_id=connection_id,
+                error_context={"operation": "send_message", "message_type": message.type}
+            )
+        except Exception as e:
+            # Se erro for relacionado à desconexão, não logar como erro crítico
+            error_message = str(e).lower()
+            if any(keyword in error_message for keyword in ["disconnect", "closed", "connection"]):
+                logger.debug(f"Erro de desconexão ao enviar mensagem para {connection_id}: {e}")
+            else:
+                logger.error(f"Erro ao enviar mensagem para {connection_id}: {e}")
+                raise
     
     async def _send_error_message(self, connection_id: str, error_code: str, error_message: str) -> None:
         """
@@ -705,4 +763,85 @@ class WebSocketHandler:
         Returns:
             PerformanceMonitor: Instância global do monitor de performance
         """
-        return performance_monitor 
+        return performance_monitor
+
+    async def _process_audio_data(self, websocket: WebSocket, connection_id: str, audio_bytes: bytes) -> None:
+        """
+        Processa dados de áudio binários recebidos do frontend.
+        
+        Args:
+            websocket: Instância do WebSocket
+            connection_id: ID único da conexão
+            audio_bytes: Dados de áudio em formato binário (PCM)
+        """
+        start_time = time.time()
+        audio_size = len(audio_bytes)
+        
+        try:
+            # Verificar se a conexão ainda está ativa
+            if not self.connection_manager.is_connection_active(connection_id):
+                logger.debug(f"Conexão {connection_id} já foi fechada, ignorando dados de áudio")
+                return
+            
+            logger.info(f"Dados de áudio recebidos (ID: {connection_id}): {audio_size} bytes")
+            
+            # Log de áudio recebido
+            websocket_logger.message_received(
+                connection_id=connection_id,
+                message_type="audio_binary",
+                size_bytes=audio_size
+            )
+            
+            # Registrar métrica de áudio recebido
+            performance_monitor.record_message_received(
+                connection_id=connection_id,
+                message_type="audio_binary", 
+                size_bytes=audio_size
+            )
+            
+            processing_time = int((time.time() - start_time) * 1000)
+            
+            # Registrar métrica específica de áudio
+            performance_monitor.record_metric(
+                MetricType.MESSAGE,
+                "audio.size_bytes",
+                audio_size,
+                tags={"connection_id": connection_id, "format": "pcm_binary"}
+            )
+            
+            # Verificar novamente se a conexão ainda está ativa antes de enviar resposta
+            if not self.connection_manager.is_connection_active(connection_id):
+                logger.debug(f"Conexão {connection_id} foi fechada durante processamento, não enviando resposta")
+                return
+            
+            # Enviar confirmação de recebimento APENAS se a conexão ainda estiver ativa
+            try:
+                from .message_protocol import AudioReceivedMessage, AudioFormat
+                response = AudioReceivedMessage(
+                    size_bytes=audio_size,
+                    format=AudioFormat.PCM_16_16000,
+                    message=f"Áudio recebido: {audio_size} bytes",
+                    connection_id=connection_id,
+                    processing_time_ms=processing_time
+                )
+                
+                await self._send_structured_message(connection_id, response, processing_time)
+                
+            except Exception as send_error:
+                # Se falhar ao enviar resposta, apenas log (não é crítico para dados de áudio)
+                logger.debug(f"Falha ao enviar confirmação de áudio para {connection_id}: {send_error}")
+            
+            # TODO: Aqui você pode integrar com o Gemini Live API
+            # Por exemplo:
+            # gemini_response = await gemini_client.process_audio_chunk(audio_bytes)
+            # await self._send_gemini_response(connection_id, gemini_response)
+            
+        except Exception as e:
+            logger.error(f"Erro ao processar áudio: {e}")
+            from .exceptions import AudioProcessingError
+            raise AudioProcessingError(
+                f"Erro interno ao processar áudio: {str(e)}",
+                audio_format="pcm_binary",
+                audio_size=audio_size,
+                connection_id=connection_id
+            ) 

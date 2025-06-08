@@ -130,14 +130,17 @@ class GeminiLiveClient:
             
         try:
             # Enviar áudio em tempo real via WebSocket
-            await self._session.send(
-                {"realtime_input": {
-                    "media_chunks": [{
-                        "data": audio_chunk,
-                        "mime_type": mime_type
-                    }]
-                }}
+            # Usando o formato correto para a nova API Gemini Live
+            message = types.LiveClientRealtimeInput(
+                media_chunks=[
+                    types.LiveClientRealtimeInput.MediaChunk(
+                        data=audio_chunk,
+                        mime_type=mime_type
+                    )
+                ]
             )
+            
+            await self._session.send(message)
             
             self._update_last_activity()
             logger.debug(f"Chunk de áudio enviado ({len(audio_chunk)} bytes)")
@@ -159,15 +162,18 @@ class GeminiLiveClient:
         try:
             logger.debug(f"Enviando mensagem de texto: {message}")
             
-            await self._session.send(
-                {"client_content": {
-                    "turns": [{
-                        "role": "user",
-                        "parts": [{"text": message}]
-                    }],
-                    "turn_complete": True
-                }}
+            # Usando o formato correto para a nova API Gemini Live
+            client_content = types.LiveClientContent(
+                turns=[
+                    types.Turn(
+                        role="user",
+                        parts=[types.Part(text=message)]
+                    )
+                ],
+                turn_complete=True
             )
+            
+            await self._session.send(client_content)
             
             self._update_last_activity()
             

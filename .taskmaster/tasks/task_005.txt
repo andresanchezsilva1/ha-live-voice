@@ -1,6 +1,6 @@
 # Task ID: 5
 # Title: Implement Frontend Audio Capture
-# Status: pending
+# Status: done
 # Dependencies: 1
 # Priority: medium
 # Description: Develop the frontend functionality to capture audio from the user's microphone and stream it to the backend via WebSocket.
@@ -212,3 +212,266 @@ onUnmounted(() => {
 5. Test visualization component with sample audio data
 6. Verify resource cleanup on component unmount
 7. Test across different browsers for compatibility
+
+# Subtasks:
+## 1. Implement MediaDevices API configuration [done]
+### Dependencies: None
+### Description: Set up the MediaDevices API to access the user's microphone and handle permissions
+### Details:
+Use navigator.mediaDevices.getUserMedia() to request microphone access. Handle user permissions and potential errors. Ensure proper audio constraints are set (e.g., channelCount: 1, sampleRate: 16000).
+<info added on 2025-06-08T04:03:28.100Z>
+Implementação completa da configuração do MediaDevices API:
+
+✅ **Funcionalidades implementadas:**
+- Verificação de suporte do navegador para MediaDevices e Web Audio API
+- Solicitação de permissão para acesso ao microfone com tratamento de diferentes tipos de erro
+- Configuração de constraints de áudio (channelCount, sampleRate, echoCancellation, noiseSuppression)
+- Tratamento detalhado de erros com códigos específicos:
+  - NotAllowedError: Permissão negada
+  - NotFoundError: Microfone não encontrado
+  - NotReadableError: Microfone em uso
+  - OverconstrainedError: Configurações não suportadas
+- Listagem de dispositivos de áudio disponíveis
+- Limpeza automática de recursos no unmount do componente
+
+✅ **Configurações padrão implementadas:**
+- channelCount: 1 (mono)
+- sampleRate: 16000 Hz (ideal para speech processing)
+- echoCancellation: true
+- noiseSuppression: true
+
+✅ **Tratamento de erros robusto:**
+- Interface AudioCaptureError com code, message e details
+- Função setError para padronização de erros
+- clearError para reset de estado de erro
+
+O composable está pronto para ser usado por componentes Vue e fornece uma interface reativa completa para gerenciar permissões e configurações de áudio.
+</info added on 2025-06-08T04:03:28.100Z>
+
+## 2. Implement real-time audio capture [done]
+### Dependencies: 5.1
+### Description: Capture audio data in real-time using Web Audio API
+### Details:
+Create an AudioContext and ScriptProcessorNode to process audio data. Implement the onaudioprocess event handler to capture audio frames. Ensure efficient processing to avoid audio glitches.
+<info added on 2025-06-08T04:05:07.343Z>
+The audio capture implementation has been completed with the following components:
+
+1. AudioContext and ScriptProcessorNode (4096 buffer size) configuration
+2. Real-time audio processing through the onaudioprocess event handler
+3. Automatic conversion from Float32Array to Int16Array (PCM format)
+4. WebSocket integration for continuous data transmission
+5. Connection state verification before sending data
+6. Comprehensive error handling
+
+A test component (AudioCaptureTest.vue) was created with:
+- Complete interface for audio capture testing
+- Dynamic parameter configuration (sampleRate, echo cancellation)
+- Connection and recording state visualization
+- Real-time event logging
+- MediaStream and tracks detailed information
+- Available audio devices listing
+- Recording controls
+- Error display with specific codes
+
+Technical specifications:
+- 4096 samples buffer size for low latency
+- Continuous processing during recording
+- State verification before processing/sending
+- Automatic resource cleanup
+- WebSocket disconnection handling
+
+The system is now ready for real-time audio capture and WebSocket transmission to the backend.
+</info added on 2025-06-08T04:05:07.343Z>
+
+## 3. Implement audio format conversion [done]
+### Dependencies: 5.2
+### Description: Convert captured audio data to the appropriate format for backend processing
+### Details:
+Convert Float32Array audio data to Int16Array for PCM format. Implement the convertFloat32ToInt16 function as shown in the current implementation. Ensure proper scaling and clamping of values.
+<info added on 2025-06-08T04:05:32.810Z>
+Conversão de formato de áudio implementada com sucesso:
+
+✅ **Função convertFloat32ToInt16 implementada:**
+```typescript
+const convertFloat32ToInt16 = (buffer: Float32Array): ArrayBuffer => {
+  const l = buffer.length
+  const buf = new Int16Array(l)
+
+  for (let i = 0; i < l; i++) {
+    // Clamping e scaling para Int16
+    const sample = Math.min(1, Math.max(-1, buffer[i]))
+    buf[i] = sample * 0x7FFF
+  }
+
+  return buf.buffer
+}
+```
+
+✅ **Características da conversão:**
+- **Input:** Float32Array (valores entre -1.0 e 1.0)
+- **Output:** ArrayBuffer contendo Int16Array (valores entre -32768 e 32767)
+- **Clamping:** Garante que valores estejam no range [-1, 1] antes da conversão
+- **Scaling:** Multiplica por 0x7FFF (32767) para máxima precisão
+- **Formato resultante:** PCM 16-bit, adequado para processamento de speech
+
+✅ **Integração no processo de captura:**
+- Conversão automática realizada no handler onaudioprocess
+- Buffer convertido é enviado diretamente via WebSocket
+- Compatível com o formato esperado pelo backend Gemini Live API
+
+✅ **Validações implementadas:**
+- Verificação de bounds para evitar overflow
+- Tratamento de valores NaN ou infinitos através do clamping
+- Preservação da qualidade de áudio durante conversão
+
+A conversão está otimizada para baixa latência e adequada para streaming em tempo real.
+</info added on 2025-06-08T04:05:32.810Z>
+
+## 4. Implement WebSocket communication [done]
+### Dependencies: 5.3
+### Description: Set up WebSocket connection and send audio data to the backend
+### Details:
+Establish WebSocket connection when starting recording. Implement error handling and reconnection logic. Send converted audio data in chunks via WebSocket. Close connection properly when stopping recording.
+<info added on 2025-06-08T04:06:00.711Z>
+WebSocket communication implemented with advanced features:
+
+✅ **Connection establishment with timeout:**
+- 10-second timeout for initial connection
+- Promise-based connection establishment
+- Handling of onopen, onerror, onclose events
+
+✅ **Automatic reconnection system:**
+- Maximum of 3 reconnection attempts
+- Exponential backoff (retryDelay * 2^attempt)
+- Automatic reconnection in case of disconnection during recording
+- Counter reset after successful connection
+
+✅ **Robust data transmission:**
+- readyState verification before sending
+- Try-catch to capture sending errors
+- Detailed transmission error logs
+- Continuous sending of ArrayBuffer (PCM data)
+
+✅ **State management:**
+- Tracking of connectionRetryCount
+- isConnecting states for UI feedback
+- Automatic connection cleanup when stopping recording
+
+✅ **WebSocket event handling:**
+```typescript
+ws.onopen = () => {
+  clearTimeout(connectionTimeout)
+  connectionRetryCount.value = 0
+  console.log('WebSocket connected successfully')
+  resolve(ws)
+}
+
+ws.onclose = (event) => {
+  console.log('WebSocket closed:', event.code, event.reason)
+  
+  // Auto-reconnect if recording was in progress
+  if (isRecording.value && connectionRetryCount.value < maxRetries) {
+    setTimeout(() => {
+      connectionRetryCount.value++
+      reconnectWebSocket(wsUrl)
+    }, retryDelay * Math.pow(2, connectionRetryCount.value))
+  }
+}
+```
+
+✅ **Reliability features:**
+- Connection timeout handling
+- Cleanup logic in case of failure
+- Visual states for user (connecting, error, success)
+- Complete integration with the audio capture system
+
+The WebSocket communication is robust and production-ready.
+</info added on 2025-06-08T04:06:00.711Z>
+
+## 5. Develop user interface for audio capture control [done]
+### Dependencies: 5.1, 5.2, 5.3, 5.4
+### Description: Create a Vue component for controlling audio capture and displaying status
+### Details:
+Implement start/stop recording buttons. Display recording status and error messages. Integrate AudioVisualizer component for visual feedback. Ensure proper state management and component lifecycle handling.
+<info added on 2025-06-08T04:06:26.260Z>
+Interface do usuário para controle de captura de áudio implementada completa:
+
+✅ **Componente AudioCaptureTest.vue criado com recursos completos:**
+
+**🎛️ Controles de gravação:**
+- Botão "Iniciar Gravação" com estados dinâmicos
+- Botão "Parar Gravação" 
+- Botão "Testar Suporte do Navegador"
+- Desabilitação inteligente baseada no estado atual
+
+**📊 Indicadores de status visuais:**
+- Status em tempo real (Inativo, Conectando, Gravando, Erro)
+- Classes CSS dinâmicas com cores específicas
+- Loading spinner animado durante conexão
+- Estados computados reativos
+
+**⚙️ Configurações de áudio interativas:**
+- Sample Rate configurável (8k, 16k, 44.1k, 48k Hz)
+- Toggle Echo Cancellation
+- Toggle Noise Suppression
+- URL WebSocket editável
+
+**🎤 Informações de dispositivos:**
+- Listagem automática de dispositivos de áudio
+- Carregamento na inicialização do componente
+- Labels descritivos ou fallback para IDs
+
+**📱 Monitoramento do MediaStream:**
+- Informações detalhadas dos tracks ativos
+- Configurações do áudio em tempo real
+- Estado dos tracks (readyState)
+- Visualização JSON das configurações
+
+**❌ Tratamento de erros avançado:**
+- Exibição de código, mensagem e detalhes
+- Botão para limpar erros
+- Styling visual para destacar erros
+
+**📝 Sistema de logs em tempo real:**
+- Log timestamped de todos os eventos
+- Categorização por tipo (info, success, error)
+- Container scrollável com últimos 20 eventos
+- Cores diferenciadas por tipo de evento
+
+**🎨 Design responsivo e moderno:**
+- Layout grid adaptativo
+- Estilo GitHub-like
+- Animações e transições suaves
+- Tipografia consistente
+</info added on 2025-06-08T04:06:26.260Z>
+<info added on 2025-06-08T04:17:21.647Z>
+**🔧 CORREÇÕES APLICADAS PARA DESCONEXÃO LIMPA:**
+
+**Frontend (useAudioCapture.ts):**
+✅ **Sequência de cleanup otimizada:**
+- Remove callback `onaudioprocess` imediatamente (para o envio)
+- Para tracks de áudio primeiro
+- Fecha AudioContext com promise handling
+- WebSocket fecha por último com delay de 100ms e código 1000 (normal closure)
+- Logs detalhados para debugging
+
+**Backend (websocket_handler.py):**
+✅ **Detecção inteligente de desconexão:**
+- Detecção de palavras-chave ("disconnect", "closed", "cannot call receive")
+- Processamento de áudio sem recovery para evitar tentativas desnecessárias
+- Verificação dupla de conexão ativa antes de envio de mensagens
+- Diferenciação entre erros de desconexão vs. erros reais
+
+✅ **Melhorias no _send_structured_message:**
+- Verificação prévia se conexão está ativa
+- Skip de envio se conexão já foi fechada
+- Recovery apenas para erros não relacionados à desconexão
+- Logs debug (não error) para erros de desconexão
+
+**🎯 Resultado esperado:**
+- Captura funciona perfeitamente
+- Desconexão limpa sem erros nos logs
+- Reconexão imediata funcionando
+- Eliminação dos race conditions
+</info added on 2025-06-08T04:17:21.647Z>
+

@@ -2,7 +2,8 @@
 Módulo cliente Gemini Live para integração com Home Assistant
 """
 
-from .client import GeminiLiveClient
+# Importar do gemini_live_api_client.py que tem a implementação oficial da Live API
+from .gemini_live_api_client import GeminiLiveAPIClient as GeminiLiveClient
 from .function_handler import HomeAssistantFunctionHandler
 from .ha_functions import (
     HA_FUNCTION_DECLARATIONS,

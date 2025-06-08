@@ -230,7 +230,7 @@ class SecurityError(WebSocketError):
 
 
 class ConfigurationError(WebSocketError):
-    """Erros de configuração do sistema"""
+    """Erros de configuração"""
     
     def __init__(self, message: str, config_key: Optional[str] = None, 
                  config_value: Optional[str] = None, **kwargs):
@@ -243,9 +243,63 @@ class ConfigurationError(WebSocketError):
         super().__init__(
             message=message,
             error_code="CONFIGURATION_ERROR",
+            severity=ErrorSeverity.HIGH,
+            details=details,
+            recoverable=False,
+            **kwargs
+        )
+
+
+class SessionNotFoundError(WebSocketError):
+    """Erro quando uma sessão não é encontrada"""
+    
+    def __init__(self, message: str, session_id: Optional[str] = None, **kwargs):
+        details = {}
+        if session_id:
+            details["session_id"] = session_id
+            
+        super().__init__(
+            message=message,
+            error_code="SESSION_NOT_FOUND",
+            severity=ErrorSeverity.MEDIUM,
+            details=details,
+            recoverable=True,
+            **kwargs
+        )
+
+
+class SessionCreationError(WebSocketError):
+    """Erro durante criação de sessão"""
+    
+    def __init__(self, message: str, session_id: Optional[str] = None, **kwargs):
+        details = {}
+        if session_id:
+            details["session_id"] = session_id
+            
+        super().__init__(
+            message=message,
+            error_code="SESSION_CREATION_ERROR",
+            severity=ErrorSeverity.HIGH,
+            details=details,
+            recoverable=True,
+            **kwargs
+        )
+
+
+class IntegrationError(WebSocketError):
+    """Erros de integração entre componentes"""
+    
+    def __init__(self, message: str, component: Optional[str] = None, **kwargs):
+        details = {}
+        if component:
+            details["component"] = component
+            
+        super().__init__(
+            message=message,
+            error_code="INTEGRATION_ERROR",
             severity=ErrorSeverity.CRITICAL,
             details=details,
-            recoverable=False,  # Erros de configuração precisam ser corrigidos manualmente
+            recoverable=False,
             **kwargs
         )
 

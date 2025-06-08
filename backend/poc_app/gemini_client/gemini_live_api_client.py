@@ -27,13 +27,13 @@ class GeminiLiveAPIClient:
     https://ai.google.dev/gemini-api/docs/live?hl=pt-br
     """
     
-    def __init__(self, api_key: str, model: str = "gemini-2.0-flash-live-001"):
+    def __init__(self, api_key: str, model: str = "gemini-2.5-flash-preview-native-audio-dialog"):
         """
         Inicializa o cliente da Live API
         
         Args:
             api_key: Chave da API do Google AI
-            model: Modelo a ser usado (padrão: gemini-2.0-flash-live-001)
+            model: Modelo a ser usado (padrão: gemini-2.5-flash-preview-native-audio-dialog)
         """
         self.api_key = api_key
         self.model = model
@@ -76,7 +76,7 @@ class GeminiLiveAPIClient:
         try:
             # Configuração da sessão
             config = {
-                "response_modalities": ["AUDIO"],  # Resposta em áudio
+                "response_modalities": ["AUDIO"],  # Volta para só áudio como estava funcionando
                 "speech_config": {
                     "voice_config": {
                         "prebuilt_voice_config": {
@@ -201,6 +201,28 @@ class GeminiLiveAPIClient:
         except Exception as e:
             logger.error(f"Erro ao enviar dados de áudio: {e}")
             raise
+
+    async def send_turn_complete(self):
+        """
+        Sinaliza ao Gemini que o turno do usuário terminou e ele deve responder
+        Baseado na documentação oficial: https://ai.google.dev/api/live
+        """
+        if not self.is_connected or not self.session:
+            raise RuntimeError("Não conectado à Live API")
+        
+        try:
+            # Baseado na documentação oficial do Google Gemini Live API
+            # Para sinalizar fim do turno após enviar áudio, usamos send_client_content
+            # com turns vazio e turn_complete=True
+            await self.session.send_client_content(
+                turns=[],  # Lista vazia de turnos
+                turn_complete=True  # Sinaliza fim do turno
+            )
+            logger.debug("Turn complete sinalizado ao Gemini usando send_client_content")
+            
+        except Exception as e:
+            logger.error(f"Erro ao enviar turn complete: {e}")
+            raise
     
     async def receive_responses(
         self,
@@ -221,44 +243,75 @@ class GeminiLiveAPIClient:
         
         try:
             async for response in self.session.receive():
-                # Processar texto
-                if response.text is not None and text_callback:
+                logger.info(f"🔍 [GEMINI-RESPONSE] Received response type: {type(response)}, hasattr text: {hasattr(response, 'text')}, hasattr data: {hasattr(response, 'data')}, hasattr server_content: {hasattr(response, 'server_content')}")
+                
+                # Log all available attributes for debugging
+                response_attrs = [attr for attr in dir(response) if not attr.startswith('_')]
+                logger.debug(f"🔍 [GEMINI-RESPONSE] Available attributes: {response_attrs}")
+                
+                # Processar texto direto
+                if hasattr(response, 'text') and response.text is not None and text_callback:
+                    logger.info(f"📝 [GEMINI-TEXT] Processing direct text response: {response.text[:100]}...")
                     text_callback(response.text)
                 
-                # Processar áudio
-                if response.data is not None and audio_callback:
+                # Processar áudio direto
+                if hasattr(response, 'data') and response.data is not None and audio_callback:
+                    logger.info(f"🎵 [GEMINI-AUDIO] Processing direct audio response: {len(response.data)} bytes")
                     audio_callback(response.data)
                 
                 # Processar chamadas de função
                 if hasattr(response, 'tool_call') and response.tool_call and function_call_callback:
+                    logger.info(f"🔧 [GEMINI-FUNCTION] Processing function call response")
                     function_call_callback(response.tool_call.function_calls)
                 
                 # Processar conteúdo do servidor
                 if hasattr(response, 'server_content') and response.server_content:
                     server_content = response.server_content
+                    logger.info(f"🔍 [GEMINI-SERVER] Processing server_content, hasattr interrupted: {hasattr(server_content, 'interrupted')}, hasattr generation_complete: {hasattr(server_content, 'generation_complete')}, hasattr model_turn: {hasattr(server_content, 'model_turn')}")
                     
                     # Verificar se foi interrompido
                     if hasattr(server_content, 'interrupted') and server_content.interrupted:
-                        logger.info("Geração interrompida pelo usuário")
+                        logger.info("⚠️ [GEMINI-INTERRUPT] Geração interrompida pelo usuário")
+                        break
                     
-                    # Verificar se o turno está completo
-                    if hasattr(server_content, 'turn_complete') and server_content.turn_complete:
-                        logger.info("Turno completo")
+                    # Verificar se a geração está completa
+                    if hasattr(server_content, 'generation_complete') and server_content.generation_complete:
+                        logger.info("✅ [GEMINI-COMPLETE] Geração completa")
+                        break
                     
                     # Processar conteúdo do modelo
                     if hasattr(server_content, 'model_turn') and server_content.model_turn:
                         model_turn = server_content.model_turn
+                        logger.info(f"🔍 [GEMINI-TURN] Processing model_turn, hasattr parts: {hasattr(model_turn, 'parts')}")
                         
                         if hasattr(model_turn, 'parts') and model_turn.parts:
-                            for part in model_turn.parts:
+                            logger.info(f"🔍 [GEMINI-PARTS] Found {len(model_turn.parts)} parts")
+                            for i, part in enumerate(model_turn.parts):
+                                part_attrs = [attr for attr in dir(part) if not attr.startswith('_')]
+                                logger.info(f"🔍 [GEMINI-PART-{i}] Part attributes: {part_attrs}")
+                                
                                 # Texto
                                 if hasattr(part, 'text') and part.text and text_callback:
+                                    logger.info(f"📝 [GEMINI-PART-TEXT] Processing text from part {i}: {part.text[:100]}...")
                                     text_callback(part.text)
                                 
                                 # Dados inline (áudio)
                                 if hasattr(part, 'inline_data') and part.inline_data and audio_callback:
+                                    logger.info(f"🎵 [GEMINI-PART-AUDIO] Found inline_data in part {i}")
                                     if hasattr(part.inline_data, 'data'):
+                                        logger.info(f"🎵 [GEMINI-PART-AUDIO] Processing audio data: {len(part.inline_data.data)} bytes")
                                         audio_callback(part.inline_data.data)
+                                    elif hasattr(part.inline_data, 'bytes'):
+                                        logger.info(f"🎵 [GEMINI-PART-AUDIO] Processing audio bytes: {len(part.inline_data.bytes)} bytes")
+                                        audio_callback(part.inline_data.bytes)
+                                    else:
+                                        inline_data_attrs = [attr for attr in dir(part.inline_data) if not attr.startswith('_')]
+                                        logger.warning(f"🎵 [GEMINI-PART-AUDIO] inline_data found but no data/bytes attributes. Available: {inline_data_attrs}")
+                                else:
+                                    if hasattr(part, 'inline_data'):
+                                        logger.info(f"🔍 [GEMINI-PART-{i}] Has inline_data but no audio_callback or data is None")
+                                    else:
+                                        logger.info(f"🔍 [GEMINI-PART-{i}] No inline_data found")
                 
         except Exception as e:
             logger.error(f"Erro ao receber respostas: {e}")

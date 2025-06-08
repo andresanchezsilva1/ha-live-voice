@@ -1,0 +1,1 @@
+# Exceptions module for poc_app 
