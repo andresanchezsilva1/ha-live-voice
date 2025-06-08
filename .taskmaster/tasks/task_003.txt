@@ -68,3 +68,153 @@ async def activate_scene(self, scene_id: str) -> dict:
 4. Verify retry logic works correctly
 5. Test with actual Home Assistant instance in development environment
 6. Validate that all required functions from section 4.2 are implemented and working
+
+# Subtasks:
+## 1. Implement Device Control Methods [done]
+### Dependencies: None
+### Description: Expand the HomeAssistantClient class to include methods for controlling various device types beyond lights and switches.
+### Details:
+Add methods for controlling climate devices, media players, covers, and other common Home Assistant entities. Each method should use the call_service method internally and handle device-specific parameters.
+<info added on 2025-06-08T01:56:20.356Z>
+Implementation Progress for Device Control Methods:
+
+## Core Implementation Completed:
+
+### 1. Basic Client Structure (client.py)
+- **HomeAssistantClient class** with async HTTP client (httpx)
+- **Authentication**: Bearer token with proper headers
+- **Base methods**: get_entity_state(), call_service()
+- **Context manager support**: async with statement compatibility
+- **Error handling**: HTTPStatusError propagation
+
+### 2. Comprehensive Device Control Methods:
+- **Light Control**: control_light() with brightness, RGB color, color temp, HS color, transition
+- **Switch Control**: control_switch() for simple on/off operations
+- **Climate Control**: control_climate() for HVAC, temperature, fan modes, humidity
+- **Media Player Control**: control_media_player() for play/pause/volume/source control
+- **Cover Control**: control_cover() for blinds, garage doors with position control
+- **Fan Control**: control_fan() with speed percentage, preset modes, direction, oscillation
+- **Scene Control**: activate_scene() with optional transition time
+- **Script Control**: run_script() with variable passing
+- **Automation Control**: control_automation() for trigger/enable/disable
+- **Input Controls**: set_input_boolean(), set_input_number(), set_input_select()
+
+### 3. Utility Methods:
+- **check_api_status()**: API health check
+- **get_config()**: HA configuration retrieval
+- **get_services()**: Available services discovery
+- **get_all_states()**: Bulk entity state retrieval
+
+### 4. Pydantic Models:
+- **HAEntityState**: For entity state representation
+- **HAServiceCall**: For service call structure
+
+### 5. Package Structure:
+- **__init__.py**: Proper package initialization with exports
+- **Type hints**: Full typing support throughout
+- **Documentation**: Comprehensive docstrings for all methods
+
+## Key Features Implemented:
+- ✅ Support for 11 different device types
+- ✅ Parameter validation and bounds checking
+- ✅ Async/await pattern throughout
+- ✅ Context manager support for resource cleanup
+- ✅ Comprehensive error handling foundation
+- ✅ Professional code structure with logging
+</info added on 2025-06-08T01:56:20.356Z>
+
+## 2. Implement Error Handling and Retry Logic [done]
+### Dependencies: 3.1
+### Description: Add robust error handling and retry mechanisms to the HomeAssistantClient class to handle network issues and API errors gracefully.
+### Details:
+Implement a custom exception hierarchy for different error types. Use exponential backoff for retries on network errors. Add logging for all API interactions and errors. Wrap all API calls in try-except blocks to catch and handle exceptions appropriately.
+<info added on 2025-06-08T02:00:14.873Z>
+# Implementation Progress for Error Handling and Retry Logic:
+
+## Core Implementation Completed:
+
+### 1. Custom Exception Hierarchy (exceptions.py)
+- **HAClientError**: Base exception class with severity levels and automatic logging
+- **Specific exceptions**: HAConnectionError, HAAuthenticationError, HAAPIError, HAEntityNotFoundError, HAServiceCallError, HATimeoutError, HAValidationError, HAConfigurationError, HARateLimitError
+- **ErrorSeverity enum**: LOW, MEDIUM, HIGH, CRITICAL with appropriate logging levels
+- **Smart error factory**: create_ha_error_from_response() for HTTP response conversion
+- **Serialization support**: to_dict() method for error transmission
+- **Context preservation**: Original exception tracking
+
+### 2. Comprehensive Retry Logic (retry_logic.py)
+- **RetryManager class**: Manages retry logic with exponential backoff
+- **Circuit Breaker Pattern**: CLOSED → OPEN → HALF_OPEN states with configurable thresholds
+- **Exponential Backoff**: Configurable base delay, max delay, exponential base
+- **Jitter Support**: Prevents thundering herd problem
+- **Smart Exception Classification**: Retriable vs non-retriable exceptions
+- **Rate Limit Handling**: Special handling for 429 responses with retry_after
+- **Decorator Support**: @with_retry decorator for easy integration
+
+### 3. Configuration Classes
+- **RetryConfig**: max_attempts=3, base_delay=1.0s, max_delay=60s, exponential_base=2.0
+- **CircuitBreakerConfig**: failure_threshold=5, recovery_timeout=60s, half_open_max_calls=3
+- **Default instances**: DEFAULT_RETRY_MANAGER for global use
+
+### 4. HomeAssistantClient Integration
+- **Enhanced constructor**: Optional retry_config, circuit_config parameters
+- **Input validation**: Configuration error handling for missing base_url/token
+- **Retry-wrapped methods**: All HTTP operations use retry manager
+- **Detailed error conversion**: HTTP exceptions → HAClientError subclasses
+- **Comprehensive logging**: Debug logs for all operations
+- **Context preservation**: Original exceptions maintained through error chain
+
+### 5. Robust Error Handling Features
+- **HTTP Status Code Mapping**: 401→Authentication, 404→EntityNotFound, 429→RateLimit, 5xx→API errors
+- **Network Error Handling**: Connection, timeout, and network errors properly classified
+- **Service Call Validation**: 400 errors with detailed error message extraction
+- **Automatic Retry Logic**: All core methods (get_entity_state, call_service, utility methods)
+- **Circuit Breaker Protection**: Prevents cascading failures
+
+### 6. Enhanced Package Structure
+- **Complete exports**: All exception classes and retry logic available
+- **Type safety**: Full typing support throughout
+- **Documentation**: Comprehensive docstrings with error information
+- **Modular design**: Separate concerns for exceptions, retry logic, and client
+
+## Key Features Implemented:
+- ✅ 9 different exception types with severity levels
+- ✅ Circuit breaker pattern with state management
+- ✅ Exponential backoff with jitter
+- ✅ Automatic error classification and conversion
+- ✅ Rate limit handling with retry_after support
+- ✅ Comprehensive logging at appropriate levels
+- ✅ Context preservation through error chains
+- ✅ Configurable retry and circuit breaker behavior
+- ✅ Global and per-instance retry managers
+- ✅ Decorator support for easy integration
+
+## Error Handling Coverage:
+- Network connectivity issues
+- Authentication failures
+- API rate limiting
+- Service unavailability
+- Invalid entity IDs
+- Malformed service calls
+- Timeout conditions
+- Server errors (5xx)
+- Configuration problems
+</info added on 2025-06-08T02:00:14.873Z>
+
+## 3. Add Input Validation Using Pydantic Models [pending]
+### Dependencies: 3.1, 3.2
+### Description: Implement Pydantic models for validating input parameters for all client methods to ensure data integrity and improve error handling.
+### Details:
+Create Pydantic models for each device type and service call. Use these models in the client methods to validate input data before making API calls. Implement custom validators where necessary for complex logic.
+
+## 4. Implement Asynchronous Batch Operations [pending]
+### Dependencies: 3.1, 3.2, 3.3
+### Description: Add methods to perform batch operations asynchronously, allowing for efficient control of multiple devices or retrieval of multiple entity states.
+### Details:
+Implement methods like batch_update_states, batch_control_devices that take lists of entities or operations. Use asyncio.gather to perform multiple API calls concurrently. Handle partial failures in batch operations gracefully.
+
+## 5. Create Factory Method and Configuration Management [pending]
+### Dependencies: 3.1, 3.2, 3.3, 3.4
+### Description: Implement a factory method to instantiate the HomeAssistantClient from environment variables or configuration files, and add configuration management capabilities.
+### Details:
+Create a from_env class method that reads configuration from environment variables. Implement a from_config method that reads from a configuration file. Add methods to update and persist configuration changes. Use Pydantic for configuration model definition and validation.
+
