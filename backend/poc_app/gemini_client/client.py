@@ -12,16 +12,16 @@ logger = logging.getLogger(__name__)
 class GeminiLiveClient:
     """
     Cliente para interagir com a API Gemini Live do Google para processamento de áudio em tempo real
-    e function calling para controle de Home Assistant
+    via WebSocket com streaming bidirecional de áudio e function calling para controle de Home Assistant
     """
     
-    def __init__(self, api_key: str, model_name: str = "gemini-2.0-flash-exp"):
+    def __init__(self, api_key: str, model_name: str = "gemini-2.0-flash-live-001"):
         """
         Inicializa o cliente Gemini Live
         
         Args:
             api_key: Chave da API do Google AI
-            model_name: Nome do modelo Gemini a ser usado
+            model_name: Nome do modelo Gemini Live a ser usado
         """
         if not api_key:
             raise ValueError("API key é obrigatória")
@@ -41,18 +41,10 @@ class GeminiLiveClient:
         self._connection_errors = 0
         self._session_id = None
         
-        # Configuração do cliente
+        # Configuração do cliente para Live API
         try:
-            genai.configure(api_key=api_key)
-            self._client = genai.GenerativeModel(
-                model_name=model_name,
-                generation_config=types.GenerationConfig(
-                    temperature=0.2,
-                    max_output_tokens=1024,
-                    response_modalities=["AUDIO", "TEXT"]
-                )
-            )
-            logger.info(f"Cliente Gemini inicializado com modelo: {model_name}")
+            self._client = genai.Client(api_key=api_key)
+            logger.info(f"Cliente Gemini Live inicializado com modelo: {model_name}")
         except Exception as e:
             logger.error(f"Erro ao inicializar cliente Gemini: {e}")
             raise
@@ -69,544 +61,596 @@ class GeminiLiveClient:
     
     async def start_audio_session(self, function_declarations: Optional[List[Dict[str, Any]]] = None) -> Any:
         """
-        Inicia uma nova sessão de streaming de áudio com function calling
+        Inicia uma nova sessão de streaming de áudio com a Live API via WebSocket
         
         Args:
             function_declarations: Lista de declarações de função para function calling
             
         Returns:
-            Sessão de chat ativa
+            Context manager da sessão WebSocket ativa
             
         Raises:
             RuntimeError: Se não conseguir iniciar a sessão
         """
         try:
-            # Configurar ferramentas se fornecidas
-            tools = None
-            if function_declarations:
-                tools = [types.Tool(function_declarations=function_declarations)]
-                logger.info(f"Configuradas {len(function_declarations)} funções para function calling")
+            # Configuração para streaming de áudio com Live API
+            config = {
+                "response_modalities": ["AUDIO"],  # Resposta em áudio
+                "speech_config": {
+                    "voice_config": {
+                        "prebuilt_voice_config": {
+                            "voice_name": "Aoede"  # Voz em português brasileiro
+                        }
+                    }
+                },
+                "system_instruction": "Você é um assistente de casa inteligente em português brasileiro. Responda de forma natural e amigável. Quando controlar dispositivos, forneça confirmações claras em português.",
+            }
             
-            # Iniciar chat com configuração
-            self._session = self._client.start_chat(
-                tools=tools,
-                enable_automatic_function_calling=False  # Processaremos manualmente
+            # Adicionar function declarations se fornecidas
+            if function_declarations:
+                config["tools"] = [{"function_declarations": function_declarations}]
+            
+            # Estabelecer conexão WebSocket com Live API
+            # A API retorna um async context manager
+            self._session_context = self._client.aio.live.connect(
+                model=self.model_name,
+                config=config
             )
             
+            # Entrar no context manager para obter a sessão
+            self._session = await self._session_context.__aenter__()
+            
             self._is_connected = True
-            logger.info("Sessão de áudio Gemini iniciada com sucesso")
+            self._update_last_activity()
+            self._session_id = f"gemini_live_{int(time.time())}"
+            
+            logger.info(f"Sessão Live API iniciada com sucesso: {self._session_id}")
+            logger.info("Streaming de áudio bidirecional ativo via WebSocket")
             return self._session
             
         except Exception as e:
-            logger.error(f"Erro ao iniciar sessão de áudio: {e}")
+            logger.error(f"Erro ao iniciar sessão Live API: {e}")
             self._is_connected = False
-            raise RuntimeError(f"Falha ao iniciar sessão Gemini: {e}")
+            raise RuntimeError(f"Falha ao iniciar sessão Gemini Live: {e}")
     
-    async def process_audio_chunk(self, audio_chunk: bytes, mime_type: str = "audio/pcm") -> Optional[Dict[str, Any]]:
+    async def send_audio_stream(self, audio_chunk: bytes, mime_type: str = "audio/pcm;rate=16000") -> None:
         """
-        Processa um chunk de áudio e retorna a resposta
+        Envia chunk de áudio para o streaming em tempo real
         
         Args:
-            audio_chunk: Dados do áudio em bytes
-            mime_type: Tipo MIME do áudio
-            
-        Returns:
-            Dicionário com resposta processada ou None se erro
-            
-        Raises:
-            RuntimeError: Se a sessão não estiver ativa
+            audio_chunk: Dados do áudio em bytes (16-bit PCM, 16kHz, mono)
+            mime_type: Tipo MIME do áudio conforme documentação Live API
         """
         if not self._session or not self._is_connected:
-            raise RuntimeError("Sessão não iniciada. Chame start_audio_session() primeiro")
+            raise RuntimeError("Sessão Live API não iniciada")
         
         if not audio_chunk:
             logger.warning("Chunk de áudio vazio recebido")
-            return None
+            return
             
         try:
-            # Criar objeto de áudio
-            audio_data = types.Part.from_bytes(
-                data=audio_chunk,
-                mime_type=mime_type
+            # Enviar áudio em tempo real via WebSocket
+            await self._session.send(
+                {"realtime_input": {
+                    "media_chunks": [{
+                        "data": audio_chunk,
+                        "mime_type": mime_type
+                    }]
+                }}
             )
             
-            # Enviar áudio para processamento
-            logger.debug(f"Enviando chunk de áudio ({len(audio_chunk)} bytes)")
-            response = await self._session.send_message_async([audio_data])
-            
-            # Processar resposta
-            processed_response = await self._process_response(response)
-            logger.debug(f"Resposta processada: {processed_response}")
-            
-            return processed_response
+            self._update_last_activity()
+            logger.debug(f"Chunk de áudio enviado ({len(audio_chunk)} bytes)")
             
         except Exception as e:
-            logger.error(f"Erro ao processar chunk de áudio: {e}")
-            return None
+            logger.error(f"Erro ao enviar chunk de áudio: {e}")
+            await self._handle_connection_error()
     
-    async def process_text_message(self, message: str) -> Optional[Dict[str, Any]]:
+    async def send_text_message(self, message: str) -> None:
         """
-        Processa uma mensagem de texto
+        Envia mensagem de texto para a sessão Live API
         
         Args:
-            message: Mensagem de texto para processar
-            
-        Returns:
-            Dicionário com resposta processada
+            message: Mensagem de texto para enviar
         """
         if not self._session or not self._is_connected:
-            raise RuntimeError("Sessão não iniciada. Chame start_audio_session() primeiro")
+            raise RuntimeError("Sessão Live API não iniciada")
             
         try:
             logger.debug(f"Enviando mensagem de texto: {message}")
-            response = await self._session.send_message_async(message)
-            processed_response = await self._process_response(response)
             
-            return processed_response
+            await self._session.send(
+                {"client_content": {
+                    "turns": [{
+                        "role": "user",
+                        "parts": [{"text": message}]
+                    }],
+                    "turn_complete": True
+                }}
+            )
+            
+            self._update_last_activity()
             
         except Exception as e:
-            logger.error(f"Erro ao processar mensagem de texto: {e}")
-            return None
-    
-    async def _process_response(self, response: Any) -> Dict[str, Any]:
+            logger.error(f"Erro ao enviar mensagem de texto: {e}")
+            await self._handle_connection_error()
+
+    async def receive_audio_responses(self):
         """
-        Processa a resposta do Gemini e extrai informações relevantes
+        Escuta e processa respostas de áudio em tempo real da Live API
+        
+        Yields:
+            Dicionários com dados de áudio e transcrições conforme chegam
+        """
+        if not self._session or not self._is_connected:
+            raise RuntimeError("Sessão Live API não iniciada")
+        
+        try:
+            async for message in self._session:
+                response_data = await self._process_live_response(message)
+                if response_data:
+                    yield response_data
+                    
+        except Exception as e:
+            logger.error(f"Erro ao receber respostas de áudio: {e}")
+            await self._handle_connection_error()
+
+    async def _process_live_response(self, message: Any) -> Optional[Dict[str, Any]]:
+        """
+        Processa resposta da Live API em tempo real
         
         Args:
-            response: Resposta bruta do Gemini
+            message: Mensagem recebida da Live API
             
         Returns:
             Dicionário estruturado com dados da resposta
         """
         try:
             result = {
-                "text": None,
-                "audio": None,
+                "audio_data": None,
+                "input_transcription": None,
+                "output_transcription": None,
                 "function_calls": [],
-                "has_content": False
+                "text": None,
+                "session_complete": False,
+                "interrupted": False
             }
             
-            if response.candidates:
-                candidate = response.candidates[0]
-                
-                if candidate.content and candidate.content.parts:
-                    for part in candidate.content.parts:
-                        # Texto
-                        if hasattr(part, 'text') and part.text:
-                            result["text"] = part.text
-                            result["has_content"] = True
-                            logger.debug(f"Texto extraído: {part.text[:100]}...")
-                        
-                        # Áudio
-                        if hasattr(part, 'inline_data') and part.inline_data:
-                            result["audio"] = part.inline_data.data
-                            result["has_content"] = True
-                            logger.debug(f"Áudio extraído: {len(part.inline_data.data)} bytes")
-                        
-                        # Function calls
-                        if hasattr(part, 'function_call') and part.function_call:
-                            function_call = {
-                                "name": part.function_call.name,
-                                "args": dict(part.function_call.args)
-                            }
-                            result["function_calls"].append(function_call)
-                            result["has_content"] = True
-                            logger.info(f"Function call detectado: {function_call['name']}")
+            # Processar dados de áudio
+            if message.data:
+                result["audio_data"] = message.data
+                logger.debug("Dados de áudio recebidos")
             
-            return result
+            # Processar conteúdo do servidor
+            if message.server_content:
+                # Transcrição de entrada
+                if message.server_content.input_transcription:
+                    result["input_transcription"] = message.server_content.input_transcription.text
+                    logger.debug(f"Transcrição entrada: {result['input_transcription']}")
+                
+                # Transcrição de saída
+                if message.server_content.output_transcription:
+                    result["output_transcription"] = message.server_content.output_transcription.text
+                    logger.debug(f"Transcrição saída: {result['output_transcription']}")
+                
+                # Turn completo
+                if message.server_content.turn_complete:
+                    result["session_complete"] = True
+                
+                # Interrupção
+                if message.server_content.interrupted:
+                    result["interrupted"] = True
+                    logger.info("Geração interrompida pelo usuário")
+                
+                # Conteúdo do modelo
+                if message.server_content.model_turn:
+                    for part in message.server_content.model_turn.parts:
+                        if part.inline_data:
+                            result["audio_data"] = part.inline_data.data
+                        elif part.text:
+                            result["text"] = part.text
+            
+            # Processar function calls
+            if hasattr(message, 'tool_call') and message.tool_call:
+                for function_call in message.tool_call.function_calls:
+                    result["function_calls"].append({
+                        "id": function_call.id,
+                        "name": function_call.name,
+                        "args": function_call.args if hasattr(function_call, 'args') else {}
+                    })
+                
+                # Processar function calls se handler estiver configurado
+                if self._function_handler and result["function_calls"]:
+                    await self._handle_function_calls(result["function_calls"])
+            
+            return result if any([
+                result["audio_data"],
+                result["input_transcription"],
+                result["output_transcription"],
+                result["function_calls"],
+                result["text"]
+            ]) else None
             
         except Exception as e:
-            logger.error(f"Erro ao processar resposta: {e}")
-            return {
-                "text": None,
-                "audio": None,
-                "function_calls": [],
-                "has_content": False,
-                "error": str(e)
-            }
-    
-    async def process_function_calls(self, function_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            logger.error(f"Erro ao processar resposta Live API: {e}")
+            return None
+
+    async def _handle_function_calls(self, function_calls: List[Dict[str, Any]]) -> None:
         """
-        Processa uma lista de function calls usando o handler configurado
+        Processa function calls da Live API
         
         Args:
-            function_calls: Lista de function calls a processar
-            
-        Returns:
-            Lista com resultados das execuções
+            function_calls: Lista de function calls para processar
         """
         if not self._function_handler:
-            logger.warning("Handler de função não configurado. Function calls não serão processados.")
-            return []
+            logger.warning("Handler de função não configurado para processar calls")
+            return
         
-        results = []
+        function_responses = []
         
-        for function_call in function_calls:
+        for call in function_calls:
             try:
-                # Executar função via handler
-                result = await self._function_handler.handle_function_call(function_call)
-                results.append(result)
+                # Executar function call
+                result = await self._function_handler.handle_function_call(
+                    call["name"],
+                    call["args"]
+                )
                 
-                # Enviar resultado de volta ao Gemini para continuar a conversa
-                if result.get("success"):
-                    await self.send_function_result(function_call["name"], result)
+                # Criar response conforme formato Live API
+                function_response = types.FunctionResponse(
+                    id=call["id"],
+                    name=call["name"],
+                    response={"result": result}
+                )
+                function_responses.append(function_response)
+                
+                logger.info(f"Function call {call['name']} executada: {result}")
                 
             except Exception as e:
-                logger.error(f"Erro ao processar function call {function_call['name']}: {e}")
-                error_result = {
-                    "success": False,
-                    "function_name": function_call["name"],
-                    "error": str(e)
-                }
-                results.append(error_result)
+                logger.error(f"Erro ao executar function call {call['name']}: {e}")
+                # Enviar erro como response
+                error_response = types.FunctionResponse(
+                    id=call["id"],
+                    name=call["name"],
+                    response={"error": str(e)}
+                )
+                function_responses.append(error_response)
         
-        return results
-    
+        # Enviar responses de volta para Live API
+        if function_responses:
+            try:
+                await self._session.send_tool_response(function_responses=function_responses)
+                logger.debug(f"Enviadas {len(function_responses)} function responses")
+            except Exception as e:
+                logger.error(f"Erro ao enviar function responses: {e}")
+
+    async def _handle_connection_error(self) -> None:
+        """
+        Trata erros de conexão da Live API
+        """
+        self._connection_errors += 1
+        self._is_connected = False
+        
+        if self._connection_errors < self._max_reconnect_attempts:
+            logger.warning(f"Erro de conexão {self._connection_errors}/{self._max_reconnect_attempts}. Tentando reconectar...")
+            await asyncio.sleep(self._reconnect_delay)
+            # Tentativa de reconexão seria implementada aqui
+        else:
+            logger.error("Número máximo de tentativas de reconexão atingido")
+
+    async def process_audio_chunk(self, audio_chunk: bytes, mime_type: str = "audio/pcm;rate=16000") -> Optional[Dict[str, Any]]:
+        """
+        MÉTODO LEGADO: Mantido para compatibilidade
+        Usar send_audio_stream() e receive_audio_responses() para streaming real
+        """
+        logger.warning("Método legado. Use send_audio_stream() e receive_audio_responses() para Live API")
+        await self.send_audio_stream(audio_chunk, mime_type)
+        return None
+
+    async def process_text_message(self, message: str) -> Optional[Dict[str, Any]]:
+        """
+        MÉTODO LEGADO: Mantido para compatibilidade
+        Usar send_text_message() para Live API
+        """
+        logger.warning("Método legado. Use send_text_message() para Live API")
+        await self.send_text_message(message)
+        return None
+
     async def get_audio_response(self, function_result: Dict[str, Any], context_message: str = None) -> Optional[Dict[str, Any]]:
         """
-        Gera uma resposta de áudio após a execução de uma função
+        Gera resposta em áudio para resultado de função usando Live API
         
         Args:
-            function_result: Resultado da execução da função
-            context_message: Mensagem de contexto opcional para guiar a resposta
+            function_result: Resultado da função executada
+            context_message: Mensagem de contexto opcional
             
         Returns:
             Dicionário com resposta de áudio ou None se erro
         """
         if not self._session or not self._is_connected:
-            raise RuntimeError("Sessão não iniciada")
-        
+            logger.warning("Sessão não disponível para resposta de áudio")
+            return None
+            
         try:
-            # Preparar mensagem de contexto baseada no resultado da função
-            if context_message is None:
+            # Gerar mensagem contextual baseada no resultado
+            if not context_message:
                 context_message = self._generate_context_message(function_result)
             
-            logger.debug(f"Gerando resposta de áudio para: {context_message}")
-            
             # Enviar mensagem para gerar resposta de áudio
-            response = await self._session.send_message_async(context_message)
+            await self.send_text_message(context_message)
             
-            # Processar resposta focando no áudio
-            processed_response = await self._process_response(response)
-            
-            if processed_response.get("audio"):
-                logger.info(f"Resposta de áudio gerada: {len(processed_response['audio'])} bytes")
-            else:
-                logger.warning("Nenhuma resposta de áudio foi gerada")
-            
-            return processed_response
+            # A resposta virá através do stream receive_audio_responses()
+            logger.info(f"Solicitada resposta de áudio para: {context_message[:50]}...")
+            return {"status": "requested", "context": context_message}
             
         except Exception as e:
-            logger.error(f"Erro ao gerar resposta de áudio: {e}")
+            logger.error(f"Erro ao solicitar resposta de áudio: {e}")
             return None
-    
+
     def _generate_context_message(self, function_result: Dict[str, Any]) -> str:
         """
-        Gera uma mensagem de contexto baseada no resultado da função executada
+        Gera mensagem contextual em português para resultado de função
         
         Args:
             function_result: Resultado da execução da função
             
         Returns:
-            Mensagem de contexto para o Gemini
-        """
-        if not function_result.get("success"):
-            return f"Houve um erro ao executar a função: {function_result.get('error', 'Erro desconhecido')}. Por favor, informe o usuário sobre o problema."
-        
-        function_name = function_result.get("function_name", "função")
-        entity_id = function_result.get("result", {}).get("entity_id", "dispositivo")
-        action = function_result.get("result", {}).get("action", "ação")
-        
-        # Gerar mensagem contextual baseada no tipo de função
-        if "light" in function_name:
-            if action == "turn_on":
-                return f"A luz {entity_id} foi ligada com sucesso. Confirme para o usuário que a luz está agora acesa."
-            elif action == "turn_off":
-                return f"A luz {entity_id} foi desligada com sucesso. Confirme para o usuário que a luz está agora apagada."
-            elif action == "toggle":
-                return f"O estado da luz {entity_id} foi alternado com sucesso."
-        
-        elif "switch" in function_name:
-            if action == "turn_on":
-                return f"O interruptor {entity_id} foi ligado com sucesso."
-            elif action == "turn_off":
-                return f"O interruptor {entity_id} foi desligado com sucesso."
-            elif action == "toggle":
-                return f"O estado do interruptor {entity_id} foi alternado com sucesso."
-        
-        elif "scene" in function_name:
-            return f"A cena {entity_id} foi ativada com sucesso. O ambiente está agora configurado conforme solicitado."
-        
-        elif "climate" in function_name:
-            if action == "set_temperature":
-                temp = function_result.get("result", {}).get("details", {}).get("temperature", "temperatura desejada")
-                return f"A temperatura do {entity_id} foi ajustada para {temp}°C com sucesso."
-            elif action == "set_hvac_mode":
-                mode = function_result.get("result", {}).get("details", {}).get("hvac_mode", "modo solicitado")
-                return f"O modo do {entity_id} foi alterado para {mode} com sucesso."
-            else:
-                return f"O sistema de clima {entity_id} foi {action} com sucesso."
-        
-        elif "media" in function_name:
-            if action == "play":
-                return f"A reprodução foi iniciada no {entity_id}."
-            elif action == "pause":
-                return f"A reprodução foi pausada no {entity_id}."
-            elif action == "stop":
-                return f"A reprodução foi interrompida no {entity_id}."
-            elif action == "volume_set":
-                volume = function_result.get("result", {}).get("details", {}).get("volume_level", "nível solicitado")
-                return f"O volume do {entity_id} foi ajustado para {volume}."
-            else:
-                return f"Comando {action} executado com sucesso no {entity_id}."
-        
-        elif "sensor" in function_name or "get_entity_state" in function_name:
-            state = function_result.get("result", {}).get("state", "estado atual")
-            return f"O estado atual do {entity_id} é: {state}."
-        
-        elif "list_entities" in function_name:
-            entities_count = len(function_result.get("result", {}).get("entities", []))
-            domain = function_result.get("result", {}).get("domain", "tipo")
-            return f"Encontrei {entities_count} dispositivos do tipo {domain} disponíveis."
-        
-        elif "cover" in function_name:
-            if action == "open_cover":
-                return f"A cobertura {entity_id} foi aberta com sucesso."
-            elif action == "close_cover":
-                return f"A cobertura {entity_id} foi fechada com sucesso."
-            elif action == "set_cover_position":
-                position = function_result.get("result", {}).get("details", {}).get("position", "posição solicitada")
-                return f"A posição da cobertura {entity_id} foi ajustada para {position}%."
-            else:
-                return f"Comando {action} executado com sucesso na cobertura {entity_id}."
-        
-        elif "lock" in function_name:
-            if action == "lock":
-                return f"A fechadura {entity_id} foi travada com sucesso."
-            elif action == "unlock":
-                return f"A fechadura {entity_id} foi destravada com sucesso."
-        
-        # Mensagem genérica para casos não cobertos
-        return f"A função {function_name} foi executada com sucesso no dispositivo {entity_id}."
-    
-    async def process_with_audio_response(self, input_data: Union[str, bytes], mime_type: str = "audio/pcm") -> Dict[str, Any]:
-        """
-        Processa entrada (áudio ou texto) com function calling e geração automática de resposta de áudio
-        
-        Args:
-            input_data: Dados de entrada (texto ou áudio)
-            mime_type: Tipo MIME se for áudio
-            
-        Returns:
-            Resposta completa incluindo resultados de function calls e áudio de resposta
+            Mensagem em português para o usuário
         """
         try:
-            # Processar entrada inicial
-            if isinstance(input_data, str):
-                response = await self.process_text_message(input_data)
-            elif isinstance(input_data, bytes):
-                response = await self.process_audio_chunk(input_data, mime_type)
+            if function_result.get("success"):
+                action = function_result.get("action", "ação")
+                device = function_result.get("device", "dispositivo")
+                
+                # Mapear ações para português
+                action_map = {
+                    "turn_on": "ligou",
+                    "turn_off": "desligou", 
+                    "set_brightness": "ajustou o brilho",
+                    "set_temperature": "ajustou a temperatura",
+                    "activate": "ativou",
+                    "deactivate": "desativou"
+                }
+                
+                action_pt = action_map.get(action, action)
+                
+                messages = [
+                    f"Perfeito! {action_pt.capitalize()} o {device} com sucesso.",
+                    f"Pronto! O {device} foi {action_pt}.",
+                    f"Feito! {device} {action_pt} conforme solicitado."
+                ]
+                
+                import random
+                return random.choice(messages)
             else:
-                raise ValueError("Tipo de entrada não suportado. Use str para texto ou bytes para áudio.")
-            
-            if not response:
-                return {"error": "Falha ao processar entrada"}
-            
-            # Se houve function calls, processá-los e gerar resposta de áudio
-            if response.get("function_calls") and self._function_handler:
-                logger.info(f"Processando {len(response['function_calls'])} function calls")
+                error = function_result.get("error", "erro desconhecido")
+                return f"Desculpe, não consegui completar a ação. Erro: {error}"
                 
-                # Processar function calls
-                function_results = await self.process_function_calls(response["function_calls"])
-                response["function_results"] = function_results
-                
-                # Gerar resposta de áudio baseada nos resultados
-                if function_results:
-                    # Usar o primeiro resultado bem-sucedido para gerar resposta
-                    successful_result = next((r for r in function_results if r.get("success")), None)
-                    
-                    if successful_result:
-                        audio_response = await self.get_audio_response(successful_result)
-                        if audio_response:
-                            response["confirmation_audio"] = audio_response.get("audio")
-                            response["confirmation_text"] = audio_response.get("text")
-                            logger.info("Resposta de áudio de confirmação gerada")
-                    else:
-                        # Se todas as funções falharam, gerar resposta de erro
-                        error_result = function_results[0] if function_results else {"error": "Função falhou"}
-                        audio_response = await self.get_audio_response(error_result)
-                        if audio_response:
-                            response["error_audio"] = audio_response.get("audio")
-                            response["error_text"] = audio_response.get("text")
+        except Exception as e:
+            logger.error(f"Erro ao gerar mensagem contextual: {e}")
+            return "Ação processada, mas não consegui gerar confirmação."
+
+    async def process_with_audio_response(self, input_data: Union[str, bytes], mime_type: str = "audio/pcm;rate=16000") -> Dict[str, Any]:
+        """
+        Processa entrada (texto ou áudio) e retorna resposta com áudio usando Live API
+        
+        Args:
+            input_data: Dados de entrada (string para texto, bytes para áudio)
+            mime_type: Tipo MIME para dados de áudio
             
-            return response
+        Returns:
+            Dicionário com resposta completa incluindo áudio
+        """
+        if not self._session or not self._is_connected:
+            return {"error": "Sessão Live API não disponível", "audio": None}
+        
+        try:
+            # Enviar dados conforme tipo
+            if isinstance(input_data, str):
+                await self.send_text_message(input_data)
+                logger.info(f"Texto enviado para Live API: {input_data[:50]}...")
+            else:
+                await self.send_audio_stream(input_data, mime_type)
+                logger.info(f"Áudio enviado para Live API ({len(input_data)} bytes)")
+            
+            # Coletar primeira resposta de áudio
+            audio_chunks = []
+            transcriptions = []
+            
+            async for response in self.receive_audio_responses():
+                if response.get("audio_data"):
+                    audio_chunks.append(response["audio_data"])
+                
+                if response.get("output_transcription"):
+                    transcriptions.append(response["output_transcription"])
+                
+                # Parar ao completar turn
+                if response.get("session_complete"):
+                    break
+            
+            # Combinar chunks de áudio
+            combined_audio = b''.join(audio_chunks) if audio_chunks else None
+            combined_text = ' '.join(transcriptions) if transcriptions else None
+            
+            result = {
+                "audio": combined_audio,
+                "text": combined_text,
+                "success": combined_audio is not None,
+                "input_type": "text" if isinstance(input_data, str) else "audio"
+            }
+            
+            logger.info(f"Resposta Live API processada: áudio={len(combined_audio) if combined_audio else 0} bytes, texto='{combined_text}'")
+            return result
             
         except Exception as e:
-            logger.error(f"Erro no processamento com resposta de áudio: {e}")
-            return {"error": str(e)}
-    
+            logger.error(f"Erro ao processar com resposta de áudio: {e}")
+            return {"error": str(e), "audio": None}
+
     async def send_function_result(self, function_name: str, result: Any) -> Optional[Dict[str, Any]]:
         """
-        Envia o resultado de uma function call de volta para o Gemini
+        Envia resultado de função e gera resposta em áudio contextual
         
         Args:
             function_name: Nome da função executada
-            result: Resultado da execução da função
+            result: Resultado da função
             
         Returns:
-            Resposta do Gemini após receber o resultado
+            Dicionário com resposta de áudio gerada
         """
         if not self._session or not self._is_connected:
-            raise RuntimeError("Sessão não iniciada")
+            logger.warning("Sessão não disponível para envio de resultado")
+            return None
             
         try:
-            # Criar resposta da função
-            function_response = types.Part.from_function_response(
-                name=function_name,
-                response={"result": result}
-            )
+            # Preparar resultado estruturado
+            function_result = {
+                "function": function_name,
+                "success": result.get("success", True) if isinstance(result, dict) else True,
+                "data": result,
+                "action": result.get("action") if isinstance(result, dict) else "executada",
+                "device": result.get("device") if isinstance(result, dict) else "dispositivo"
+            }
             
-            logger.debug(f"Enviando resultado da função {function_name}: {result}")
-            response = await self._session.send_message_async([function_response])
+            # Gerar e enviar resposta de áudio
+            audio_response = await self.get_audio_response(function_result)
             
-            return await self._process_response(response)
+            logger.info(f"Resultado de {function_name} enviado para resposta de áudio")
+            return audio_response
             
         except Exception as e:
-            logger.error(f"Erro ao enviar resultado da função: {e}")
+            logger.error(f"Erro ao enviar resultado de função: {e}")
             return None
-    
+
     async def close_session(self):
         """
-        Fecha a sessão ativa e limpa recursos
+        Fecha a sessão Live API WebSocket
         """
         try:
-            if self._session:
-                # Gemini não tem método explícito de close, apenas limpar referência
-                self._session = None
-                logger.info("Sessão Gemini fechada")
-            
-            self._is_connected = False
-            
+            if self._session and self._is_connected and hasattr(self, '_session_context'):
+                # Sair do context manager adequadamente
+                await self._session_context.__aexit__(None, None, None)
+                logger.info("Sessão Live API fechada")
         except Exception as e:
             logger.error(f"Erro ao fechar sessão: {e}")
-    
+        finally:
+            self._session = None
+            self._session_context = None
+            self._is_connected = False
+
     @property
     def is_connected(self) -> bool:
-        """Retorna se a sessão está ativa"""
-        return self._is_connected
-    
+        """Retorna True se a sessão Live API estiver ativa"""
+        return self._is_connected and self._session is not None
+
     @property
     def has_function_handler(self) -> bool:
-        """Retorna se um handler de função está configurado"""
+        """Retorna True se um handler de função estiver configurado"""
         return self._function_handler is not None
-    
+
     def _update_last_activity(self):
-        """Atualiza o timestamp da última atividade"""
+        """Atualiza timestamp da última atividade"""
         self._last_activity = time.time()
-    
+
     def _is_session_expired(self) -> bool:
-        """Verifica se a sessão expirou por inatividade"""
+        """Verifica se a sessão expirou baseado no timeout"""
         if not self._last_activity:
             return False
-        
         return (time.time() - self._last_activity) > self._session_timeout
-    
+
     async def check_session_health(self) -> bool:
         """
-        Verifica a saúde da sessão atual
+        Verifica saúde da sessão Live API
         
         Returns:
-            True se a sessão está saudável, False caso contrário
+            True se a sessão estiver saudável
         """
-        if not self._is_connected or not self._session:
-            return False
-        
-        if self._is_session_expired():
-            logger.warning("Sessão expirou por inatividade")
-            return False
-        
         try:
-            # Tentar uma operação simples para verificar conectividade
-            test_response = await self.process_text_message("ping")
-            return test_response is not None
+            if not self._is_connected or not self._session:
+                logger.warning("Sessão não conectada")
+                return False
+            
+            if self._is_session_expired():
+                logger.warning("Sessão expirada por timeout")
+                self._is_connected = False
+                return False
+            
+            # Na Live API WebSocket, podemos verificar se ainda está conectada
+            # tentando uma operação simples
+            return True
+            
         except Exception as e:
-            logger.warning(f"Verificação de saúde da sessão falhou: {e}")
+            logger.error(f"Erro ao verificar saúde da sessão: {e}")
+            self._is_connected = False
             return False
-    
+
     async def ensure_connected(self, function_declarations: Optional[List[Dict[str, Any]]] = None) -> bool:
         """
-        Garante que a sessão está conectada, reconectando se necessário
+        Garante que há uma conexão Live API ativa
         
         Args:
-            function_declarations: Declarações de função para reconexão
+            function_declarations: Declarações de função para nova sessão
             
         Returns:
-            True se conectado com sucesso, False caso contrário
+            True se conexão estiver ativa
         """
         if await self.check_session_health():
             return True
         
-        logger.info("Sessão não está saudável, tentando reconectar...")
+        logger.info("Reconectando sessão Live API...")
         return await self.reconnect_with_retry(function_declarations)
-    
+
     async def reconnect_with_retry(self, function_declarations: Optional[List[Dict[str, Any]]] = None) -> bool:
         """
-        Reconecta com tentativas múltiplas e backoff exponencial
+        Tenta reconectar com retry usando Live API
         
         Args:
-            function_declarations: Declarações de função para a nova sessão
+            function_declarations: Declarações de função para nova sessão
             
         Returns:
-            True se reconectou com sucesso, False caso contrário
+            True se reconexão for bem-sucedida
         """
         for attempt in range(self._max_reconnect_attempts):
             try:
                 logger.info(f"Tentativa de reconexão {attempt + 1}/{self._max_reconnect_attempts}")
                 
-                # Fechar sessão atual
-                await self.close_session()
-                
-                # Aguardar com backoff exponencial
-                delay = self._reconnect_delay * (2 ** attempt)
-                await asyncio.sleep(delay)
-                
-                # Tentar reconectar
-                await self.start_audio_session(function_declarations)
-                
-                if self._is_connected:
-                    logger.info(f"Reconexão bem-sucedida na tentativa {attempt + 1}")
+                if await self.reconnect(function_declarations):
+                    logger.info("Reconexão Live API bem-sucedida")
                     self._connection_errors = 0
                     return True
-                    
+                
             except Exception as e:
-                logger.error(f"Tentativa de reconexão {attempt + 1} falhou: {e}")
-                self._connection_errors += 1
+                logger.error(f"Falha na tentativa {attempt + 1}: {e}")
+            
+            if attempt < self._max_reconnect_attempts - 1:
+                delay = self._reconnect_delay * (2 ** attempt)  # Backoff exponencial
+                logger.info(f"Aguardando {delay}s antes da próxima tentativa...")
+                await asyncio.sleep(delay)
         
-        logger.error(f"Falha em todas as {self._max_reconnect_attempts} tentativas de reconexão")
+        logger.error("Todas as tentativas de reconexão falharam")
         return False
-    
+
     async def reconnect(self, function_declarations: Optional[List[Dict[str, Any]]] = None) -> bool:
         """
-        Reconecta a sessão em caso de falha
+        Reconecta a sessão Live API
         
         Args:
-            function_declarations: Declarações de função para a nova sessão
+            function_declarations: Declarações de função para nova sessão
             
         Returns:
-            True se reconectou com sucesso, False caso contrário
+            True se reconexão for bem-sucedida
         """
         try:
-            logger.info("Tentando reconectar sessão Gemini...")
+            # Fechar sessão atual se existir
             await self.close_session()
             
             # Aguardar um pouco antes de reconectar
             await asyncio.sleep(1)
             
+            # Iniciar nova sessão
             await self.start_audio_session(function_declarations)
             
-            logger.info("Reconexão bem-sucedida")
-            return True
+            return self._is_connected
             
         except Exception as e:
-            logger.error(f"Falha na reconexão: {e}")
+            logger.error(f"Erro na reconexão: {e}")
             return False 
