@@ -27,3 +27,4 @@ node_modules/
 # Task files
 .cursor/
 venv/
+__pycache__/

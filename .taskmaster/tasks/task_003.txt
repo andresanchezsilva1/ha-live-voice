@@ -1,6 +1,6 @@
 # Task ID: 3
 # Title: Implement Home Assistant Client Module
-# Status: pending
+# Status: done
 # Dependencies: 1
 # Priority: high
 # Description: Develop the Home Assistant client module to communicate with the Home Assistant REST API for controlling devices and retrieving information.
@@ -122,6 +122,32 @@ Implementation Progress for Device Control Methods:
 - ✅ Comprehensive error handling foundation
 - ✅ Professional code structure with logging
 </info added on 2025-06-08T01:56:20.356Z>
+<info added on 2025-06-08T02:24:30.731Z>
+## Real-World Testing Results
+
+### Integration Test Summary
+- ✅ Successful connection to Home Assistant instance at http://ha.local
+- ✅ Authentication with JWT token validated
+- ✅ Configuration retrieval successful (identified as "Casa")
+- ✅ Entity state retrieval working (551 entities found)
+- ✅ Light control tested with real device (light.leds_sala, state: "on")
+- ✅ Error handling validated (EntityNotFoundError properly triggered)
+- ✅ Retry logic confirmed operational
+
+### Issue Identified
+- ⚠️ Services API returns list instead of dict - adjustment needed in get_services() method
+
+### Test Metrics
+- Overall Score: 7/8 tests passed (87.5%)
+- Implementation validated against production Home Assistant instance
+
+### Validation Evidence
+- Successful JWT authentication with real Home Assistant instance
+- Accurate retrieval of 551 entities from production system
+- Specific device identification and state reading (light.leds_sala)
+- Authentication system and exception handling working as designed
+- Retry logic successfully tested in real-world conditions
+</info added on 2025-06-08T02:24:30.731Z>
 
 ## 2. Implement Error Handling and Retry Logic [done]
 ### Dependencies: 3.1
@@ -199,22 +225,150 @@ Implement a custom exception hierarchy for different error types. Use exponentia
 - Server errors (5xx)
 - Configuration problems
 </info added on 2025-06-08T02:00:14.873Z>
+<info added on 2025-06-08T02:28:30.348Z>
+## Final Implementation Update - Error Handling and Retry Logic
 
-## 3. Add Input Validation Using Pydantic Models [pending]
+### Critical Bug Fix Implemented
+- **Issue**: `get_services()` method incorrectly expected dict format from Home Assistant API
+- **Actual API Response**: List of domain objects `[{domain: "light", services: {...}}, ...]`
+- **Fix Applied**: Modified `get_services()` to transform list format to expected dict format
+- **Transformation Logic**: Converts `[{domain: "light", services: {...}}, ...]` → `{"light": {...}, ...}`
+- **Backward Compatibility**: Maintains support for direct dict responses
+
+### Validation Results
+- **Test Coverage**: 8/8 tests passing (100%)
+- **API Integration**: Successfully processed 67 service domains
+- **Live Testing**: Verified against production Home Assistant instance (http://ha.local)
+- **Error Handling**: All custom exception classes functioning correctly
+- **Retry Mechanisms**: Circuit breaker pattern and exponential backoff validated
+
+### Implementation Status
+- **Error Handling Module**: COMPLETE
+- **Retry Logic**: COMPLETE
+- **API Integration**: COMPLETE with real-world validation
+- **Services API Fix**: COMPLETE and verified with hardware testing (light.leds_sala)
+
+All error handling and retry logic components are now fully functional and validated against a production Home Assistant instance, resolving all identified issues.
+</info added on 2025-06-08T02:28:30.348Z>
+
+## 3. Add Input Validation Using Pydantic Models [done]
 ### Dependencies: 3.1, 3.2
 ### Description: Implement Pydantic models for validating input parameters for all client methods to ensure data integrity and improve error handling.
 ### Details:
 Create Pydantic models for each device type and service call. Use these models in the client methods to validate input data before making API calls. Implement custom validators where necessary for complex logic.
+<info added on 2025-06-08T02:37:53.401Z>
+# Pydantic Models Implementation
 
-## 4. Implement Asynchronous Batch Operations [pending]
+## Models Created (models.py)
+- **Base Models**: 
+  - `EntityIdModel`: Validates entity_id format (domain.entity_name)
+  - `StateModel`: Validates on/off states
+  - `ColorModel`: Validates RGB, HS, color_temp
+  - `ServiceCallModel`: Validates service calls
+
+- **Device Control Models**:
+  - `LightControlModel`: Brightness (0-255), RGB/HS colors, color_temp, transition
+  - `SwitchControlModel`: Basic on/off states
+  - `ClimateControlModel`: HVAC modes, temperatures, fan modes, humidity
+  - `MediaPlayerControlModel`: Actions, volume (0.0-1.0), media content
+  - `CoverControlModel`: Actions, position/tilt (0-100%)
+  - `FanControlModel`: Speed percentage, preset modes, direction, oscillation
+  - `SceneControlModel`: Transition time
+  - `ScriptControlModel`: Variables dictionary
+  - `AutomationControlModel`: Actions (turn_on/off, trigger, reload)
+
+- **Input Models**:
+  - `InputBooleanModel`, `InputNumberModel`, `InputSelectModel`
+  - `InputTextModel`, `InputDateTimeModel`
+
+- **Batch Models**:
+  - `BatchEntityOperation`: List of entity IDs
+  - `BatchServiceCall`: Batch operations
+
+- **Enums**:
+  - `HVACMode`, `MediaPlayerAction`, `CoverAction`, `AutomationAction`
+
+## Client Integration
+- **Validation Function**: `_validate_input()` converts ValidationError to HAValidationError with detailed error messages
+- **Updated Methods**:
+  - `get_entity_state()`: Validates entity_id format
+  - `control_light()`: Complete validation of light parameters
+  - `control_switch()`: Validation of switch parameters
+
+- **Pydantic v2 Compatibility**:
+  - Migrated from `@validator` to `@field_validator`
+  - Migrated from `@root_validator` to `@model_validator`
+  - Added `@classmethod` decorators
+
+## Validation Tests
+- Entity ID validation (valid accepted, invalid rejected)
+- Light parameters validation (valid accepted, invalid brightness/RGB rejected)
+- Successful integration with Home Assistant
+
+## Package Updates
+- All models exported in `__init__.py`
+- Updated documentation
+- Backward compatibility maintained
+
+## Benefits
+- Data integrity through rigorous input validation
+- Early detection of invalid parameters
+- Clear and specific error messages
+- Type safety with typed models for better IDE support
+- Easy extensibility for new validation models
+</info added on 2025-06-08T02:37:53.401Z>
+
+## 4. Implement Asynchronous Batch Operations [done]
 ### Dependencies: 3.1, 3.2, 3.3
 ### Description: Add methods to perform batch operations asynchronously, allowing for efficient control of multiple devices or retrieval of multiple entity states.
 ### Details:
 Implement methods like batch_update_states, batch_control_devices that take lists of entities or operations. Use asyncio.gather to perform multiple API calls concurrently. Handle partial failures in batch operations gracefully.
 
-## 5. Create Factory Method and Configuration Management [pending]
+## 5. Create Factory Method and Configuration Management [done]
 ### Dependencies: 3.1, 3.2, 3.3, 3.4
 ### Description: Implement a factory method to instantiate the HomeAssistantClient from environment variables or configuration files, and add configuration management capabilities.
 ### Details:
 Create a from_env class method that reads configuration from environment variables. Implement a from_config method that reads from a configuration file. Add methods to update and persist configuration changes. Use Pydantic for configuration model definition and validation.
+<info added on 2025-06-08T02:49:51.938Z>
+Factory Method and Configuration Management Implementation Complete
+
+## Factory Methods Implemented:
+
+### 1. HomeAssistantClient Factory Methods:
+- **from_env()**: Creates client from environment variables (HA_BASE_URL, HA_ACCESS_TOKEN, etc.)
+- **from_config_file()**: Creates client from JSON configuration file with auto-discovery of default paths
+- **from_config()**: Creates client from HAClientConfig object
+
+### 2. Configuration Management:
+- **HAClientConfig**: Pydantic model with validation for all client parameters
+  - URL normalization (adds protocol, removes trailing slash)
+  - Access token validation (minimum length)
+  - Type validation for all numeric parameters
+  - Serialization/deserialization (to_dict, to_json, from_dict, from_json)
+
+- **ConfigManager**: Comprehensive configuration management
+  - Environment variable loading with type conversion
+  - File-based configuration (JSON) with default paths
+  - Configuration updates and persistence
+  - Sample configuration generation
+
+### 3. Client Configuration Methods:
+- **get_config()**: Returns current client configuration as HAClientConfig
+- **update_config()**: Updates client configuration with new values
+- **get_ha_config()**: Renamed method to get HA API configuration (differentiated from client config)
+
+### 4. Configuration Features:
+- **Environment Variable Support**: HA_BASE_URL, HA_ACCESS_TOKEN, HA_TIMEOUT, HA_VERIFY_SSL, etc.
+- **Default Configuration Paths**: ~/.ha_client/config.json, ./.ha_client.json, ./ha_client_config.json
+- **Validation**: Input validation with clear error messages
+- **Flexibility**: Multiple configuration sources and formats
+
+### 5. Test Coverage:
+- **Factory method tests**: All three factory methods working correctly
+- **Configuration validation**: URL normalization, serialization, error handling
+- **Client configuration management**: get_config and update_config methods
+- **Environment variable handling**: Proper type conversion and validation
+
+All factory methods and configuration management functionality implemented and tested successfully against real Home Assistant instance. Implementation follows best practices with proper error handling, validation, and documentation.
+</info added on 2025-06-08T02:49:51.938Z>
 
