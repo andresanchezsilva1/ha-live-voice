@@ -83,8 +83,24 @@ class PerformanceMonitor:
         """Inicia o monitoramento contínuo"""
         if not self._monitoring_active:
             self._monitoring_active = True
-            self._monitor_task = asyncio.create_task(self._continuous_monitoring())
-            logger.info("Sistema de monitoramento de performance iniciado")
+            try:
+                # Só criar task se houver um loop de eventos rodando
+                loop = asyncio.get_running_loop()
+                self._monitor_task = asyncio.create_task(self._continuous_monitoring())
+                logger.info("Sistema de monitoramento de performance iniciado")
+            except RuntimeError:
+                # Não há loop rodando, será iniciado depois
+                logger.info("Monitoramento será iniciado quando o loop de eventos estiver ativo")
+                pass
+    
+    async def ensure_monitoring_started(self) -> None:
+        """Garante que o monitoramento está ativo quando há um loop de eventos"""
+        if self._monitoring_active and not self._monitor_task:
+            try:
+                self._monitor_task = asyncio.create_task(self._continuous_monitoring())
+                logger.info("Sistema de monitoramento de performance iniciado com loop ativo")
+            except Exception as e:
+                logger.error(f"Erro ao iniciar monitoramento: {e}")
     
     def stop_monitoring(self) -> None:
         """Para o monitoramento contínuo"""

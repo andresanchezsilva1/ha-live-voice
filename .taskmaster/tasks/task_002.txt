@@ -1,6 +1,6 @@
 # Task ID: 2
 # Title: Implement Backend WebSocket Server
-# Status: in-progress
+# Status: done
 # Dependencies: 1
 # Priority: high
 # Description: Develop the WebSocket server in the backend to handle real-time communication between the frontend and the backend services.
