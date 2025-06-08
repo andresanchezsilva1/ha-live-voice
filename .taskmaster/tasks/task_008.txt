@@ -1,0 +1,158 @@
+# Task ID: 8
+# Title: Integrate Backend Components
+# Status: pending
+# Dependencies: 2, 3, 4
+# Priority: high
+# Description: Integrate the Home Assistant client, Gemini Live API client, and WebSocket server in the backend to create a complete processing pipeline.
+# Details:
+1. Create a main application class in backend/poc_app/core/app.py to orchestrate the components:
+```python
+class GeminiHomeAssistantApp:
+    def __init__(self, gemini_api_key: str, ha_url: str, ha_token: str):
+        self.gemini_client = GeminiLiveClient(gemini_api_key)
+        self.ha_client = HomeAssistantClient(ha_url, ha_token)
+        self.active_sessions = {}
+        
+    async def create_session(self, session_id: str):
+        """Create a new session with Gemini Live API"""
+        gemini_session = await self.gemini_client.start_audio_session(HA_FUNCTION_DECLARATIONS)
+        self.active_sessions[session_id] = {
+            "gemini_session": gemini_session,
+            "created_at": datetime.now(),
+        }
+        return session_id
+        
+    async def process_audio(self, session_id: str, audio_chunk: bytes):
+        """Process an audio chunk and return response"""
+        if session_id not in self.active_sessions:
+            raise ValueError(f"Session {session_id} not found")
+            
+        session_data = self.active_sessions[session_id]
+        gemini_session = session_data["gemini_session"]
+        
+        # Process audio with Gemini
+        response = await self.gemini_client.process_audio_chunk(gemini_session, audio_chunk)
+        
+        # Check for function calls
+        function_result = None
+        if response.candidates and response.candidates[0].content.parts:
+            function_result = await self.gemini_client.handle_function_call(response, self.ha_client)
+        
+        # Get transcription
+        transcription = response.text if hasattr(response, 'text') else ""
+        
+        # Get audio response if function was called
+        audio_response = None
+        if function_result:
+            audio_response = await self.gemini_client.get_audio_response(gemini_session, function_result)
+        
+        return {
+            "transcription": transcription,
+            "audio_response": audio_response,
+            "function_result": function_result
+        }
+        
+    def close_session(self, session_id: str):
+        """Close a session"""
+        if session_id in self.active_sessions:
+            del self.active_sessions[session_id]
+            
+    async def cleanup_old_sessions(self, max_age_minutes: int = 10):
+        """Clean up sessions older than max_age_minutes"""
+        now = datetime.now()
+        sessions_to_remove = []
+        
+        for session_id, session_data in self.active_sessions.items():
+            age = (now - session_data["created_at"]).total_seconds() / 60
+            if age > max_age_minutes:
+                sessions_to_remove.append(session_id)
+                
+        for session_id in sessions_to_remove:
+            self.close_session(session_id)
+```
+
+2. Update the WebSocket endpoint in main.py to use the application class:
+```python
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from uuid import uuid4
+from core.app import GeminiHomeAssistantApp
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+app = FastAPI()
+
+# Initialize the application
+gemini_app = GeminiHomeAssistantApp(
+    gemini_api_key=os.getenv("GEMINI_API_KEY"),
+    ha_url=os.getenv("HA_URL"),
+    ha_token=os.getenv("HA_LLAT")
+)
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    
+    # Create a unique session ID
+    session_id = str(uuid4())
+    await gemini_app.create_session(session_id)
+    
+    try:
+        while True:
+            # Receive audio data
+            audio_data = await websocket.receive_bytes()
+            
+            # Process audio
+            result = await gemini_app.process_audio(session_id, audio_data)
+            
+            # Send transcription
+            if result["transcription"]:
+                await websocket.send_json({
+                    "type": "transcription",
+                    "text": result["transcription"]
+                })
+            
+            # Send audio response if available
+            if result["audio_response"]:
+                await websocket.send_bytes(result["audio_response"])
+                
+            # Send function result if available
+            if result["function_result"]:
+                await websocket.send_json({
+                    "type": "function_result",
+                    "result": result["function_result"]
+                })
+                
+    except WebSocketDisconnect:
+        gemini_app.close_session(session_id)
+        
+    except Exception as e:
+        logger.error(f"Error in WebSocket: {str(e)}")
+        await websocket.close(code=1011)
+        gemini_app.close_session(session_id)
+
+# Background task to clean up old sessions
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(cleanup_sessions_task())
+
+async def cleanup_sessions_task():
+    while True:
+        await gemini_app.cleanup_old_sessions()
+        await asyncio.sleep(60)  # Check every minute
+```
+
+3. Implement error handling and logging throughout the integration
+4. Add session management and cleanup
+5. Implement message protocol for different types of responses
+6. Add configuration validation using Pydantic models
+
+# Test Strategy:
+1. Test the complete processing pipeline with sample audio data
+2. Verify session creation, management, and cleanup
+3. Test error handling and recovery
+4. Validate message protocol between components
+5. Test integration with both Gemini Live API and Home Assistant
+6. Measure and optimize performance (latency, memory usage)
+7. Test with various audio inputs and commands

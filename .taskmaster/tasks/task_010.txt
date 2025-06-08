@@ -1,0 +1,295 @@
+# Task ID: 10
+# Title: Implement Testing and Documentation
+# Status: pending
+# Dependencies: 1, 2, 3, 4, 5, 6, 7, 8, 9
+# Priority: low
+# Description: Create comprehensive tests and documentation for the application to ensure reliability and facilitate future development.
+# Details:
+1. Create backend unit tests in backend/tests/:
+```python
+# tests/test_ha_client.py
+import pytest
+from unittest.mock import AsyncMock, patch
+from poc_app.ha_client.client import HomeAssistantClient
+
+@pytest.fixture
+def mock_ha_client():
+    client = HomeAssistantClient("http://test-ha.local:8123", "test-token")
+    client.client = AsyncMock()
+    return client
+
+@pytest.mark.asyncio
+async def test_get_entity_state(mock_ha_client):
+    # Mock response
+    mock_response = AsyncMock()
+    mock_response.json.return_value = {"entity_id": "light.test", "state": "on"}
+    mock_ha_client.client.get.return_value = mock_response
+    
+    # Call method
+    result = await mock_ha_client.get_entity_state("light.test")
+    
+    # Assertions
+    mock_ha_client.client.get.assert_called_once_with(
+        "http://test-ha.local:8123/api/states/light.test"
+    )
+    assert result["entity_id"] == "light.test"
+    assert result["state"] == "on"
+
+@pytest.mark.asyncio
+async def test_control_light(mock_ha_client):
+    # Mock response
+    mock_response = AsyncMock()
+    mock_response.json.return_value = {"success": True}
+    mock_ha_client.client.post.return_value = mock_response
+    
+    # Call method
+    result = await mock_ha_client.control_light("light.test", "on", brightness=128)
+    
+    # Assertions
+    mock_ha_client.client.post.assert_called_once_with(
+        "http://test-ha.local:8123/api/services/light/turn_on",
+        json={"entity_id": "light.test", "brightness": 128}
+    )
+    assert result["success"] == True
+```
+
+2. Create frontend unit tests in frontend/tests/:
+```typescript
+// tests/unit/composables/useAudioCapture.spec.ts
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { useAudioCapture } from '@/composables/useAudioCapture'
+import { ref } from 'vue'
+
+// Mock navigator.mediaDevices
+const mockMediaStream = {
+  getTracks: vi.fn().mockReturnValue([{ stop: vi.fn() }])
+}
+
+const mockAudioContext = {
+  createScriptProcessor: vi.fn().mockReturnValue({
+    connect: vi.fn(),
+    disconnect: vi.fn()
+  }),
+  createMediaStreamSource: vi.fn().mockReturnValue({
+    connect: vi.fn()
+  }),
+  destination: {},
+  close: vi.fn()
+}
+
+vi.mock('vue', async () => {
+  const actual = await vi.importActual('vue')
+  return {
+    ...actual,
+    onUnmounted: vi.fn()
+  }
+})
+
+describe('useAudioCapture', () => {
+  beforeEach(() => {
+    // Mock global objects
+    global.navigator.mediaDevices = {
+      getUserMedia: vi.fn().mockResolvedValue(mockMediaStream)
+    }
+    global.AudioContext = vi.fn().mockImplementation(() => mockAudioContext)
+    global.WebSocket = vi.fn().mockImplementation(() => ({
+      onopen: null,
+      onerror: null,
+      send: vi.fn(),
+      close: vi.fn()
+    }))
+  })
+  
+  afterEach(() => {
+    vi.clearAllMocks()
+  })
+  
+  it('should initialize with isRecording set to false', () => {
+    const { isRecording } = useAudioCapture()
+    expect(isRecording.value).toBe(false)
+  })
+  
+  it('should start recording when startRecording is called', async () => {
+    const { isRecording, startRecording } = useAudioCapture()
+    
+    await startRecording('ws://localhost:8000/ws')
+    
+    expect(isRecording.value).toBe(true)
+    expect(global.navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith({
+      audio: {
+        channelCount: 1,
+        sampleRate: 16000
+      }
+    })
+    expect(global.AudioContext).toHaveBeenCalled()
+    expect(global.WebSocket).toHaveBeenCalledWith('ws://localhost:8000/ws')
+  })
+  
+  it('should stop recording when stopRecording is called', async () => {
+    const { isRecording, startRecording, stopRecording } = useAudioCapture()
+    
+    await startRecording('ws://localhost:8000/ws')
+    stopRecording()
+    
+    expect(isRecording.value).toBe(false)
+    expect(mockMediaStream.getTracks).toHaveBeenCalled()
+    expect(mockAudioContext.close).toHaveBeenCalled()
+  })
+})
+```
+
+3. Create integration tests for the backend:
+```python
+# tests/test_integration.py
+import pytest
+from fastapi.testclient import TestClient
+from unittest.mock import patch, AsyncMock
+from poc_app.main import app
+
+@pytest.fixture
+def test_client():
+    return TestClient(app)
+
+def test_health_endpoint(test_client):
+    response = test_client.get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+@pytest.mark.asyncio
+async def test_websocket_connection():
+    with patch('poc_app.core.app.GeminiHomeAssistantApp.create_session', new_callable=AsyncMock) as mock_create_session:
+        mock_create_session.return_value = "test-session"
+        
+        with TestClient(app).websocket_connect("/ws") as websocket:
+            # Test connection is established
+            assert websocket.accepted
+            mock_create_session.assert_called_once()
+```
+
+4. Create end-to-end tests for the frontend:
+```typescript
+// tests/e2e/app.spec.ts
+import { test, expect } from '@playwright/test'
+
+test('basic app functionality', async ({ page }) => {
+  // Navigate to the app
+  await page.goto('/')
+  
+  // Check initial state
+  await expect(page.locator('h1')).toHaveText('Home Assistant Voice Control')
+  await expect(page.locator('.connection-status')).toHaveText('Disconnected')
+  await expect(page.locator('.transcription-text')).toHaveText('Waiting for speech...')
+  
+  // Test microphone button
+  const micButton = page.locator('.mic-button')
+  await expect(micButton).toHaveText('Start')
+  
+  // Click the mic button (will request permissions in a real browser)
+  await micButton.click()
+  
+  // In a real test, we would need to handle permission dialogs
+  // and mock WebSocket connections
+})
+```
+
+5. Create API documentation using FastAPI's built-in Swagger UI
+
+6. Create a comprehensive README.md:
+```markdown
+# Home Assistant Control with Gemini Live API and Vue3 Interface
+
+A proof of concept application that allows controlling Home Assistant devices using voice commands processed by Google's Gemini Live API, with a modern Vue3 interface.
+
+## Features
+
+- Voice control for Home Assistant devices
+- Real-time bidirectional audio streaming
+- Natural language processing with Gemini Live API
+- Modern and responsive Vue3 interface
+- Privacy-focused approach
+
+## Prerequisites
+
+- Python 3.11+
+- Node.js 16+
+- Google Cloud account with Gemini API access
+- Home Assistant instance with API access
+
+## Setup
+
+### Backend
+
+1. Clone the repository
+2. Navigate to the backend directory: `cd poc_gemini_ha/backend`
+3. Create a virtual environment: `python -m venv venv`
+4. Activate the virtual environment:
+   - Windows: `venv\Scripts\activate`
+   - Unix/MacOS: `source venv/bin/activate`
+5. Install dependencies: `pip install -r requirements.txt`
+6. Create a `.env` file with the following variables:
+   ```
+   GEMINI_API_KEY="your_gemini_api_key"
+   HA_URL="http://homeassistant.local:8123"
+   HA_LLAT="your_home_assistant_token"
+   AUDIO_SAMPLE_RATE_GEMINI=16000
+   AUDIO_CHANNELS_GEMINI=1
+   ```
+7. Start the server: `uvicorn poc_app.main:app --reload`
+
+### Frontend
+
+1. Navigate to the frontend directory: `cd poc_gemini_ha/frontend`
+2. Install dependencies: `npm install`
+3. Create a `.env` file with the following variables:
+   ```
+   VITE_API_URL="http://localhost:8000"
+   VITE_WS_URL="ws://localhost:8000/ws"
+   ```
+4. Start the development server: `npm run dev`
+
+## Usage
+
+1. Open the application in your browser
+2. Click the microphone button to start recording
+3. Speak a command (e.g., "Turn on the living room lights")
+4. The system will process your command and control Home Assistant accordingly
+5. You will receive an audio response confirming the action
+
+## Development
+
+### Running Tests
+
+- Backend: `pytest`
+- Frontend: `npm run test:unit`
+
+### Building for Production
+
+- Backend: Package as needed (Docker recommended)
+- Frontend: `npm run build`
+
+## Architecture
+
+The application consists of the following components:
+
+1. **Frontend (Vue3)**: Handles user interface, audio capture, and playback
+2. **Backend (FastAPI)**: Orchestrates communication between components
+3. **Gemini Client**: Interfaces with Google's Gemini Live API
+4. **Home Assistant Client**: Communicates with Home Assistant API
+
+## License
+
+MIT
+```
+
+7. Create developer documentation for each module
+8. Add inline code documentation and type hints
+
+# Test Strategy:
+1. Run unit tests for backend components
+2. Run unit tests for frontend components
+3. Run integration tests for backend API
+4. Run end-to-end tests for the complete application
+5. Verify documentation is accurate and comprehensive
+6. Test README instructions by following them on a clean environment
+7. Validate API documentation with sample requests
+8. Ensure all code has proper type hints and documentation

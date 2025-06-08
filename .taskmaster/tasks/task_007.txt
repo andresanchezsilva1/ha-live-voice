@@ -1,0 +1,250 @@
+# Task ID: 7
+# Title: Implement Main Vue3 Interface
+# Status: pending
+# Dependencies: 5, 6
+# Priority: medium
+# Description: Develop the main Vue3 interface with components for audio control, transcription display, and system status.
+# Details:
+1. Create the main App.vue component:
+```vue
+<template>
+  <div class="app-container">
+    <header>
+      <h1>Home Assistant Voice Control</h1>
+      <div class="connection-status" :class="{ connected: isConnected }">
+        {{ isConnected ? 'Connected' : 'Disconnected' }}
+      </div>
+    </header>
+    
+    <main>
+      <div class="transcription-container">
+        <h2>Transcription</h2>
+        <div class="transcription-text">{{ transcription || 'Waiting for speech...' }}</div>
+      </div>
+      
+      <div class="visualizer-container">
+        <AudioVisualizer 
+          :media-stream="mediaStream" 
+          :width="400" 
+          :height="100" 
+        />
+      </div>
+      
+      <div class="controls-container">
+        <button 
+          class="mic-button" 
+          :class="{ active: isRecording }" 
+          @click="toggleRecording"
+        >
+          <span class="mic-icon">🎤</span>
+          {{ isRecording ? 'Stop' : 'Start' }}
+        </button>
+      </div>
+      
+      <div class="response-container">
+        <h2>System Response</h2>
+        <div class="response-text">{{ systemResponse }}</div>
+      </div>
+    </main>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, onMounted, onUnmounted } from 'vue'
+import { useAudioCapture } from '@/composables/useAudioCapture'
+import { useWebSocketAudio } from '@/composables/useWebSocketAudio'
+import AudioVisualizer from '@/components/AudioVisualizer.vue'
+
+const wsUrl = 'ws://localhost:8000/ws'
+const { isRecording, startRecording, stopRecording } = useAudioCapture()
+const { isConnected, transcription, isPlaying, connect, disconnect } = useWebSocketAudio(wsUrl)
+
+const mediaStream = ref<MediaStream | null>(null)
+const systemResponse = ref('')
+
+const toggleRecording = async () => {
+  try {
+    if (isRecording.value) {
+      stopRecording()
+      mediaStream.value = null
+    } else {
+      if (!isConnected.value) {
+        connect()
+      }
+      
+      mediaStream.value = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          sampleRate: 16000
+        }
+      })
+      
+      await startRecording(wsUrl)
+    }
+  } catch (error) {
+    console.error('Error toggling recording:', error)
+    // Show error to user
+  }
+}
+
+onMounted(() => {
+  connect()
+})
+
+onUnmounted(() => {
+  stopRecording()
+  disconnect()
+})
+</script>
+
+<style scoped>
+.app-container {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 20px;
+  font-family: Arial, sans-serif;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.connection-status {
+  padding: 5px 10px;
+  border-radius: 4px;
+  background-color: #f44336;
+  color: white;
+}
+
+.connection-status.connected {
+  background-color: #4caf50;
+}
+
+.transcription-container,
+.response-container {
+  margin-bottom: 20px;
+  padding: 15px;
+  border-radius: 8px;
+  background-color: #f5f5f5;
+}
+
+.transcription-text,
+.response-text {
+  min-height: 60px;
+  padding: 10px;
+  border-radius: 4px;
+  background-color: white;
+  border: 1px solid #ddd;
+}
+
+.visualizer-container {
+  margin-bottom: 20px;
+}
+
+.controls-container {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 20px;
+}
+
+.mic-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 15px 30px;
+  border: none;
+  border-radius: 50px;
+  background-color: #2196f3;
+  color: white;
+  font-size: 18px;
+  cursor: pointer;
+  transition: background-color 0.3s;
+}
+
+.mic-button:hover {
+  background-color: #0b7dda;
+}
+
+.mic-button.active {
+  background-color: #f44336;
+}
+
+.mic-icon {
+  margin-right: 10px;
+  font-size: 24px;
+}
+</style>
+```
+
+2. Create a Pinia store for managing application state:
+```typescript
+// src/store/appStore.ts
+import { defineStore } from 'pinia'
+
+export const useAppStore = defineStore('app', {
+  state: () => ({
+    isConnected: false,
+    isRecording: false,
+    isPlaying: false,
+    transcription: '',
+    systemResponse: '',
+    error: null as string | null,
+  }),
+  
+  actions: {
+    setConnectionStatus(status: boolean) {
+      this.isConnected = status
+    },
+    
+    setRecordingStatus(status: boolean) {
+      this.isRecording = status
+    },
+    
+    setPlayingStatus(status: boolean) {
+      this.isPlaying = status
+    },
+    
+    updateTranscription(text: string) {
+      this.transcription = text
+    },
+    
+    updateSystemResponse(text: string) {
+      this.systemResponse = text
+    },
+    
+    setError(error: string | null) {
+      this.error = error
+    },
+    
+    resetState() {
+      this.isRecording = false
+      this.isPlaying = false
+      this.transcription = ''
+      this.systemResponse = ''
+      this.error = null
+    }
+  }
+})
+```
+
+3. Create additional components:
+   - ErrorNotification.vue for displaying errors
+   - ConnectionStatus.vue for showing connection status
+   - AudioControls.vue for audio control buttons
+
+4. Implement responsive design using CSS media queries
+5. Add loading states and transitions
+6. Implement error handling and user feedback
+
+# Test Strategy:
+1. Test component rendering and layout
+2. Verify responsive design on different screen sizes
+3. Test state management with Pinia store
+4. Validate user interactions (button clicks, etc.)
+5. Test error handling and notifications
+6. Verify visual feedback for different states (recording, playing, etc.)
+7. Test accessibility features
+8. Perform cross-browser testing

@@ -1,0 +1,146 @@
+# Task ID: 6
+# Title: Implement Frontend Audio Playback
+# Status: pending
+# Dependencies: 2, 5
+# Priority: medium
+# Description: Develop the frontend functionality to receive audio responses from the backend and play them back to the user.
+# Details:
+1. Create an audio playback composable in frontend/src/composables/useAudioPlayback.ts:
+```typescript
+import { ref } from 'vue'
+
+export function useAudioPlayback() {
+  const isPlaying = ref(false)
+  const audioContext = ref<AudioContext | null>(null)
+  
+  const initAudioContext = () => {
+    if (!audioContext.value) {
+      audioContext.value = new AudioContext()
+    }
+    return audioContext.value
+  }
+  
+  const playAudioBuffer = async (audioData: ArrayBuffer) => {
+    try {
+      const context = initAudioContext()
+      isPlaying.value = true
+      
+      // Decode the audio data
+      const audioBuffer = await context.decodeAudioData(audioData)
+      
+      // Create buffer source
+      const source = context.createBufferSource()
+      source.buffer = audioBuffer
+      source.connect(context.destination)
+      
+      // Play the audio
+      source.start(0)
+      
+      // Handle completion
+      source.onended = () => {
+        isPlaying.value = false
+      }
+    } catch (error) {
+      console.error('Error playing audio:', error)
+      isPlaying.value = false
+      throw error
+    }
+  }
+  
+  const stopPlayback = () => {
+    if (audioContext.value) {
+      audioContext.value.close()
+      audioContext.value = null
+    }
+    isPlaying.value = false
+  }
+  
+  return {
+    isPlaying,
+    playAudioBuffer,
+    stopPlayback
+  }
+}
+```
+
+2. Create a WebSocket message handler to process incoming audio data:
+```typescript
+import { ref } from 'vue'
+import { useAudioPlayback } from './useAudioPlayback'
+
+export function useWebSocketAudio(wsUrl: string) {
+  const { playAudioBuffer, isPlaying } = useAudioPlayback()
+  const isConnected = ref(false)
+  const transcription = ref('')
+  const websocket = ref<WebSocket | null>(null)
+  
+  const connect = () => {
+    websocket.value = new WebSocket(wsUrl)
+    
+    websocket.value.onopen = () => {
+      isConnected.value = true
+      console.log('WebSocket connected')
+    }
+    
+    websocket.value.onclose = () => {
+      isConnected.value = false
+      console.log('WebSocket disconnected')
+      // Implement reconnection logic
+      setTimeout(connect, 3000)
+    }
+    
+    websocket.value.onerror = (error) => {
+      console.error('WebSocket error:', error)
+    }
+    
+    websocket.value.onmessage = async (event) => {
+      try {
+        // Check if the message is binary (audio) or text (transcription)
+        if (event.data instanceof Blob) {
+          const audioData = await event.data.arrayBuffer()
+          await playAudioBuffer(audioData)
+        } else {
+          // Handle text messages (transcriptions, status updates)
+          const message = JSON.parse(event.data)
+          
+          if (message.type === 'transcription') {
+            transcription.value = message.text
+          }
+          // Handle other message types
+        }
+      } catch (error) {
+        console.error('Error processing WebSocket message:', error)
+      }
+    }
+  }
+  
+  const disconnect = () => {
+    if (websocket.value) {
+      websocket.value.close()
+      websocket.value = null
+    }
+  }
+  
+  return {
+    isConnected,
+    transcription,
+    isPlaying,
+    connect,
+    disconnect
+  }
+}
+```
+
+3. Implement audio queue to handle multiple audio responses
+4. Add volume control and mute functionality
+5. Implement error handling for audio decoding and playback issues
+6. Add visual indicators for playback state
+
+# Test Strategy:
+1. Test audio playback with sample audio buffers
+2. Verify WebSocket message handling for different message types
+3. Test queue management for multiple audio responses
+4. Validate error handling for malformed audio data
+5. Test playback controls (volume, mute)
+6. Verify visual indicators update correctly
+7. Test across different browsers for compatibility

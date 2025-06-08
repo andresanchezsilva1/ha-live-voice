@@ -1,0 +1,70 @@
+# Task ID: 3
+# Title: Implement Home Assistant Client Module
+# Status: pending
+# Dependencies: 1
+# Priority: high
+# Description: Develop the Home Assistant client module to communicate with the Home Assistant REST API for controlling devices and retrieving information.
+# Details:
+1. Create a Home Assistant client class in ha_client/client.py:
+```python
+class HomeAssistantClient:
+    def __init__(self, base_url: str, access_token: str):
+        self.base_url = base_url
+        self.headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
+        self.client = httpx.AsyncClient(headers=self.headers, timeout=10.0)
+    
+    async def get_entity_state(self, entity_id: str) -> dict:
+        """Get the current state of an entity"""
+        response = await self.client.get(f"{self.base_url}/api/states/{entity_id}")
+        response.raise_for_status()
+        return response.json()
+    
+    async def call_service(self, domain: str, service: str, service_data: dict) -> dict:
+        """Call a Home Assistant service"""
+        response = await self.client.post(
+            f"{self.base_url}/api/services/{domain}/{service}",
+            json=service_data
+        )
+        response.raise_for_status()
+        return response.json()
+```
+
+2. Implement specific service methods for required functionality:
+```python
+async def control_light(self, entity_id: str, state: str, brightness: Optional[int] = None, color: Optional[List[int]] = None) -> dict:
+    """Control a light entity"""
+    service_data = {"entity_id": entity_id}
+    
+    if brightness is not None:
+        service_data["brightness"] = brightness
+    
+    if color is not None:
+        service_data["rgb_color"] = color
+    
+    return await self.call_service("light", "turn_" + state, service_data)
+
+async def control_switch(self, entity_id: str, state: str) -> dict:
+    """Control a switch entity"""
+    service_data = {"entity_id": entity_id}
+    return await self.call_service("switch", "turn_" + state, service_data)
+
+async def activate_scene(self, scene_id: str) -> dict:
+    """Activate a scene"""
+    service_data = {"entity_id": scene_id}
+    return await self.call_service("scene", "turn_on", service_data)
+```
+
+3. Implement error handling and retry logic
+4. Add validation for input parameters using Pydantic models
+5. Create factory method to instantiate client from environment variables
+
+# Test Strategy:
+1. Create mock Home Assistant API responses for unit testing
+2. Test each service method with valid parameters
+3. Test error handling with invalid parameters and API errors
+4. Verify retry logic works correctly
+5. Test with actual Home Assistant instance in development environment
+6. Validate that all required functions from section 4.2 are implemented and working

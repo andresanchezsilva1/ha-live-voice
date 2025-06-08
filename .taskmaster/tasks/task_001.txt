@@ -1,0 +1,189 @@
+# Task ID: 1
+# Title: Setup Project Structure and Environment
+# Status: done
+# Dependencies: None
+# Priority: high
+# Description: Initialize the project repository with the required directory structure for both backend and frontend, and configure the development environment with necessary dependencies.
+# Details:
+1. Create the project directory structure as specified in section 9.2:
+   - poc_gemini_ha/
+     - backend/
+       - poc_app/
+         - main.py
+         - gemini_client/
+         - ha_client/
+         - core/
+         - models/
+       - tests/
+       - .env
+       - requirements.txt
+     - frontend/
+       - src/
+         - components/
+         - composables/
+         - store/
+         - views/
+       - tests/
+       - package.json
+     - README.md
+
+2. Backend setup:
+   - Initialize Python virtual environment
+   - Install required packages: FastAPI, uvicorn, httpx, google-genai, websockets, python-dotenv, pydantic
+   - Create .env file with placeholders for environment variables specified in section 9.1
+   - Setup basic FastAPI application in main.py
+
+3. Frontend setup:
+   - Initialize Vue3 project with Vue CLI or Vite
+   - Configure TypeScript
+   - Install dependencies: Pinia, Vue Router, vue-audio-visual
+   - Setup basic project structure
+
+4. Create README.md with project overview and setup instructions
+
+# Test Strategy:
+1. Verify all directories and files are created according to the structure
+2. Ensure backend server starts without errors
+3. Ensure frontend development server starts without errors
+4. Validate that all dependencies are correctly installed and importable
+5. Confirm environment variables are properly loaded from .env file
+
+# Subtasks:
+## 1. Create Project Directory Structure [done]
+### Dependencies: None
+### Description: Set up the initial directory structure for both backend and frontend components of the project.
+### Details:
+Create the main project directory 'poc_gemini_ha' with subdirectories for backend (including poc_app, tests) and frontend (including src, tests). Ensure all specified subdirectories and files are created as per the structure in section 9.2.
+<info added on 2025-06-08T00:33:03.884Z>
+A estrutura de diretórios foi implementada com sucesso:
+
+- backend/
+  - poc_app/ (com __init__.py)
+    - gemini_client/ (com __init__.py)
+    - ha_client/ (com __init__.py)
+    - core/ (com __init__.py)
+    - models/ (com __init__.py)
+  - tests/ (com __init__.py)
+- frontend/
+  - src/
+    - components/
+    - composables/
+    - store/
+    - views/
+  - tests/
+
+Todos os diretórios foram criados conforme especificado no PRD (seção 9.2). Os arquivos __init__.py foram adicionados aos pacotes Python para torná-los importáveis.
+</info added on 2025-06-08T00:33:03.884Z>
+
+## 2. Initialize Backend Environment [done]
+### Dependencies: 1.1
+### Description: Set up the Python virtual environment and install required packages for the backend.
+### Details:
+Create a Python virtual environment in the backend directory. Install FastAPI, uvicorn, httpx, google-genai, websockets, python-dotenv, and pydantic using pip. Create a requirements.txt file listing all installed packages and their versions.
+<info added on 2025-06-08T00:37:31.347Z>
+✅ Ambiente backend inicializado com sucesso!
+
+**Realizações:**
+1. **Ambiente Virtual Python 3.11:** Criado em `backend/venv/`
+2. **Dependências Instaladas:** Todas as dependências do PRD foram instaladas com sucesso:
+   - fastapi==0.115.12
+   - uvicorn==0.34.3 
+   - httpx==0.28.1
+   - google-genai==1.19.0 ✅ (SDK correto para Gemini Live API)
+   - websockets==15.0.1
+   - python-dotenv==1.1.0
+   - pydantic==2.11.5
+   - E todas as dependências necessárias
+
+3. **Requirements.txt:** Gerado com todas as versões das dependências
+4. **Teste de Importação:** Todas as dependências principais foram importadas com sucesso
+
+**Próximo passo:** Configurar aplicação backend básica (subtarefa 1.3)
+</info added on 2025-06-08T00:37:31.347Z>
+
+## 3. Configure Backend Application [done]
+### Dependencies: 1.2
+### Description: Set up the basic FastAPI application and environment variables.
+### Details:
+Create a .env file in the backend directory with placeholders for environment variables as specified in section 9.1. Implement a basic FastAPI application in main.py that loads these environment variables using python-dotenv.
+<info added on 2025-06-08T00:43:47.472Z>
+## Backend Application Successfully Configured
+
+### Accomplishments:
+1. **Created .env file:** With all necessary environment variables as per PRD section 9.1:
+   - GEMINI_API_KEY (placeholder)
+   - HA_URL and HA_LLAT (placeholders)
+   - AUDIO_SAMPLE_RATE_GEMINI=16000
+   - AUDIO_CHANNELS_GEMINI=1
+
+2. **Configuration module (core/config.py):** 
+   - Implemented with Pydantic Settings
+   - Automatic loading of environment variables
+   - Absolute path to .env file working correctly
+
+3. **FastAPI Application (main.py):**
+   - Basic application created with title and description
+   - CORS configured for Vue3 frontend
+   - Implemented endpoints: `/` (root), `/health`, `/ws/voice` (WebSocket)
+   - Logging configured
+   - Server starts correctly on port 8000
+
+4. **Tests performed:**
+   - Configurations loaded successfully
+   - FastAPI application created without errors
+   - Server starts and responds correctly
+</info added on 2025-06-08T00:43:47.472Z>
+
+## 4. Initialize Frontend Project [done]
+### Dependencies: 1.1
+### Description: Set up the Vue3 project with necessary configurations and dependencies.
+### Details:
+Use Vue CLI or Vite to initialize a new Vue3 project in the frontend directory. Configure TypeScript support. Install Pinia, Vue Router, and vue-audio-visual using npm or yarn. Set up the basic project structure including components, composables, store, and views directories.
+<info added on 2025-06-08T00:48:01.821Z>
+✅ Projeto frontend inicializado com sucesso!
+
+**Realizações:**
+1. **Projeto Vue3 criado:** Usando Vite como bundler (mais rápido que Vue CLI)
+2. **TypeScript configurado:** 
+   - tsconfig.json e tsconfig.node.json criados
+   - main.js convertido para main.ts
+   - Declarações de tipos para arquivos .vue
+   - Compilação TypeScript funcionando
+
+3. **Dependências instaladas:**
+   - Vue 3 (framework principal)
+   - TypeScript (tipagem estática)
+   - Pinia (gerenciamento de estado)
+   - Vue Router 4 (roteamento)
+   - vue-audio-visual (visualização de áudio)
+
+4. **Estrutura de diretórios criada:**
+   - src/components/ ✅
+   - src/composables/ ✅
+   - src/store/ ✅
+   - src/views/ ✅
+   - src/tests/ ✅
+
+5. **Configuração básica implementada:**
+   - main.ts configurado com Pinia e Vue Router
+   - App.vue atualizado para usar router-view
+   - HomeView.vue criada com interface inicial
+   - Estilos básicos aplicados
+
+6. **Testes realizados:**
+   - Projeto compila sem erros (npm run build)
+   - Build de produção gerado com sucesso
+   - Estrutura pronta para desenvolvimento
+
+**Próximo passo:** Criar documentação do projeto (subtarefa 1.5)
+</info added on 2025-06-08T00:48:01.821Z>
+
+## 5. Create Project Documentation [done]
+### Dependencies: 1.1, 1.2, 1.3, 1.4
+### Description: Write the initial README.md file with project overview and setup instructions.
+### Details:
+Create a README.md file in the project root directory. Include sections for project overview, technologies used, directory structure, setup instructions for both backend and frontend, and any other relevant information for developers.
+<info added on 2025-06-08T00:49:14.333Z>
+A documentação do projeto foi criada com sucesso, incluindo um README.md completo no diretório raiz. O documento contém todas as seções planejadas: visão geral do projeto, tecnologias utilizadas, estrutura de diretórios, instruções de configuração para backend e frontend, além de informações adicionais como endpoints da API, fluxo de funcionamento, comandos de desenvolvimento, status do projeto, guia de contribuição e suporte. A documentação técnica foi elaborada com detalhes sobre estrutura de arquivos, dependências, configuração do ambiente e obtenção de chaves de API. O formato foi aprimorado com emojis, blocos de código com syntax highlighting e links para recursos externos, resultando em uma documentação profissional e abrangente que permite a qualquer desenvolvedor configurar e executar o projeto facilmente.
+</info added on 2025-06-08T00:49:14.333Z>
+

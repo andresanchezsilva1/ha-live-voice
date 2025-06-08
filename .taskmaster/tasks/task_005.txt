@@ -1,0 +1,214 @@
+# Task ID: 5
+# Title: Implement Frontend Audio Capture
+# Status: pending
+# Dependencies: 1
+# Priority: medium
+# Description: Develop the frontend functionality to capture audio from the user's microphone and stream it to the backend via WebSocket.
+# Details:
+1. Create an audio capture composable in frontend/src/composables/useAudioCapture.ts:
+```typescript
+import { ref, onUnmounted } from 'vue'
+
+export function useAudioCapture() {
+  const isRecording = ref(false)
+  const audioContext = ref<AudioContext | null>(null)
+  const mediaStream = ref<MediaStream | null>(null)
+  const processor = ref<ScriptProcessorNode | null>(null)
+  const websocket = ref<WebSocket | null>(null)
+  
+  const startRecording = async (wsUrl: string) => {
+    try {
+      // Initialize WebSocket
+      websocket.value = new WebSocket(wsUrl)
+      
+      await new Promise((resolve, reject) => {
+        websocket.value!.onopen = resolve
+        websocket.value!.onerror = reject
+      })
+      
+      // Initialize audio context and stream
+      audioContext.value = new AudioContext()
+      mediaStream.value = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          sampleRate: 16000
+        }
+      })
+      
+      // Create processor to handle audio data
+      processor.value = audioContext.value.createScriptProcessor(4096, 1, 1)
+      
+      // Connect audio nodes
+      const source = audioContext.value.createMediaStreamSource(mediaStream.value)
+      source.connect(processor.value)
+      processor.value.connect(audioContext.value.destination)
+      
+      // Process audio data
+      processor.value.onaudioprocess = (e) => {
+        if (!isRecording.value) return
+        
+        const inputData = e.inputBuffer.getChannelData(0)
+        const pcmData = convertFloat32ToInt16(inputData)
+        
+        if (websocket.value?.readyState === WebSocket.OPEN) {
+          websocket.value.send(pcmData)
+        }
+      }
+      
+      isRecording.value = true
+    } catch (error) {
+      console.error('Error starting recording:', error)
+      throw error
+    }
+  }
+  
+  const stopRecording = () => {
+    isRecording.value = false
+    
+    if (processor.value) {
+      processor.value.disconnect()
+      processor.value = null
+    }
+    
+    if (mediaStream.value) {
+      mediaStream.value.getTracks().forEach(track => track.stop())
+      mediaStream.value = null
+    }
+    
+    if (audioContext.value) {
+      audioContext.value.close()
+      audioContext.value = null
+    }
+    
+    if (websocket.value) {
+      websocket.value.close()
+      websocket.value = null
+    }
+  }
+  
+  // Convert Float32Array to Int16Array for PCM format
+  const convertFloat32ToInt16 = (buffer: Float32Array) => {
+    const l = buffer.length
+    const buf = new Int16Array(l)
+    
+    for (let i = 0; i < l; i++) {
+      buf[i] = Math.min(1, Math.max(-1, buffer[i])) * 0x7FFF
+    }
+    
+    return buf.buffer
+  }
+  
+  onUnmounted(() => {
+    stopRecording()
+  })
+  
+  return {
+    isRecording,
+    startRecording,
+    stopRecording
+  }
+}
+```
+
+2. Create an audio visualization component using vue-audio-visual:
+```vue
+<template>
+  <div class="audio-visualizer">
+    <canvas ref="canvas" :width="width" :height="height"></canvas>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, onMounted, onUnmounted, watch } from 'vue'
+
+const props = defineProps<{
+  mediaStream: MediaStream | null
+  width: number
+  height: number
+}>()
+
+const canvas = ref<HTMLCanvasElement | null>(null)
+let animationFrame: number | null = null
+let audioContext: AudioContext | null = null
+let analyser: AnalyserNode | null = null
+let dataArray: Uint8Array | null = null
+
+const setupAnalyser = () => {
+  if (!props.mediaStream) return
+  
+  audioContext = new AudioContext()
+  analyser = audioContext.createAnalyser()
+  analyser.fftSize = 256
+  
+  const source = audioContext.createMediaStreamSource(props.mediaStream)
+  source.connect(analyser)
+  
+  const bufferLength = analyser.frequencyBinCount
+  dataArray = new Uint8Array(bufferLength)
+  
+  draw()
+}
+
+const draw = () => {
+  if (!canvas.value || !analyser || !dataArray) return
+  
+  animationFrame = requestAnimationFrame(draw)
+  
+  const canvasCtx = canvas.value.getContext('2d')
+  if (!canvasCtx) return
+  
+  analyser.getByteFrequencyData(dataArray)
+  
+  canvasCtx.fillStyle = 'rgb(0, 0, 0)'
+  canvasCtx.fillRect(0, 0, props.width, props.height)
+  
+  const barWidth = (props.width / dataArray.length) * 2.5
+  let barHeight: number
+  let x = 0
+  
+  for (let i = 0; i < dataArray.length; i++) {
+    barHeight = dataArray[i] / 2
+    
+    canvasCtx.fillStyle = `rgb(${barHeight + 100}, 50, 50)`
+    canvasCtx.fillRect(x, props.height - barHeight, barWidth, barHeight)
+    
+    x += barWidth + 1
+  }
+}
+
+watch(() => props.mediaStream, (newStream) => {
+  if (newStream) {
+    setupAnalyser()
+  }
+})
+
+onMounted(() => {
+  if (props.mediaStream) {
+    setupAnalyser()
+  }
+})
+
+onUnmounted(() => {
+  if (animationFrame) {
+    cancelAnimationFrame(animationFrame)
+  }
+  
+  if (audioContext) {
+    audioContext.close()
+  }
+})
+</script>
+```
+
+3. Implement error handling and reconnection logic for WebSocket
+4. Add visual indicators for recording state
+5. Ensure proper cleanup of audio resources when component is unmounted
+
+# Test Strategy:
+1. Test microphone access permissions
+2. Verify audio capture starts and stops correctly
+3. Test WebSocket connection establishment and data transmission
+4. Validate audio format conversion (Float32 to Int16)
+5. Test visualization component with sample audio data
+6. Verify resource cleanup on component unmount
+7. Test across different browsers for compatibility

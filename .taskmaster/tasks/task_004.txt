@@ -1,0 +1,109 @@
+# Task ID: 4
+# Title: Implement Gemini Live API Client
+# Status: pending
+# Dependencies: 1
+# Priority: high
+# Description: Develop the Gemini client module to handle communication with Google's Gemini Live API for processing voice commands and generating responses.
+# Details:
+1. Create a Gemini client class in gemini_client/client.py:
+```python
+class GeminiLiveClient:
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.genai = genai.GenerativeModel(
+            model_name="gemini-2.5-flash-preview-native-audio-dialog",
+            generation_config={
+                "temperature": 0.2,
+                "max_output_tokens": 1024,
+            }
+        )
+        
+    async def start_audio_session(self, function_declarations):
+        """Start a new audio streaming session with function calling"""
+        session = self.genai.start_chat(tools=function_declarations)
+        return session
+        
+    async def process_audio_chunk(self, session, audio_chunk):
+        """Process an audio chunk and return the response"""
+        response = await session.send_audio(audio_chunk)
+        return response
+```
+
+2. Define function declarations for Home Assistant control:
+```python
+HA_FUNCTION_DECLARATIONS = [
+    {
+        "name": "control_light",
+        "description": "Control a light entity in Home Assistant",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "entity_id": {
+                    "type": "string",
+                    "description": "The entity ID of the light to control"
+                },
+                "state": {
+                    "type": "string",
+                    "enum": ["on", "off"],
+                    "description": "The desired state of the light"
+                },
+                "brightness": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 255,
+                    "description": "The brightness level (0-255)"
+                },
+                "color": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 255
+                    },
+                    "description": "RGB color values as [R, G, B]"
+                }
+            },
+            "required": ["entity_id", "state"]
+        }
+    },
+    # Add other function declarations for switch, scene, etc.
+]
+```
+
+3. Implement function to handle function calling responses:
+```python
+async def handle_function_call(self, response, ha_client):
+    """Handle function calls from Gemini and execute them via Home Assistant client"""
+    if not response.candidates[0].content.parts[0].function_call:
+        return None
+        
+    function_call = response.candidates[0].content.parts[0].function_call
+    function_name = function_call.name
+    function_args = function_call.args
+    
+    # Map function calls to Home Assistant client methods
+    if function_name == "control_light":
+        return await ha_client.control_light(**function_args)
+    elif function_name == "control_switch":
+        return await ha_client.control_switch(**function_args)
+    # Add other function mappings
+```
+
+4. Implement audio response handling:
+```python
+async def get_audio_response(self, session, function_result):
+    """Get audio response after function execution"""
+    response = await session.send_message(f"Function executed with result: {function_result}")
+    return response.audio
+```
+
+5. Add error handling, reconnection logic, and session management
+
+# Test Strategy:
+1. Create mock Gemini API responses for unit testing
+2. Test audio session initialization with function declarations
+3. Test processing of audio chunks with sample audio data
+4. Verify function calling detection and parsing
+5. Test integration with Home Assistant client using mocks
+6. Validate audio response generation
+7. Test error handling and session management

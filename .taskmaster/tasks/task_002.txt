@@ -1,0 +1,291 @@
+# Task ID: 2
+# Title: Implement Backend WebSocket Server
+# Status: in-progress
+# Dependencies: 1
+# Priority: high
+# Description: Develop the WebSocket server in the backend to handle real-time communication between the frontend and the backend services.
+# Details:
+1. Create WebSocket endpoint in FastAPI:
+```python
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        while True:
+            # Receive audio data from frontend
+            data = await websocket.receive_bytes()
+            # Process data (will be implemented in subsequent tasks)
+            # Send response back to frontend
+            await websocket.send_bytes(response_data)
+    except WebSocketDisconnect:
+        logger.info("WebSocket disconnected")
+    except Exception as e:
+        logger.error(f"WebSocket error: {str(e)}")
+        await websocket.close()
+```
+
+2. Implement connection manager to handle multiple concurrent WebSocket connections:
+```python
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+
+    async def send_bytes(self, message: bytes, websocket: WebSocket):
+        await websocket.send_bytes(message)
+```
+
+3. Implement error handling and reconnection logic
+4. Add logging for connection events and errors
+5. Create basic message protocol for different types of messages (audio data, text, status updates)
+
+# Test Strategy:
+1. Use WebSocket testing tools (like Postman or wscat) to verify connection establishment
+2. Test sending and receiving binary data through the WebSocket
+3. Verify proper error handling when connection is interrupted
+4. Test multiple concurrent connections
+5. Validate logging of connection events
+
+# Subtasks:
+## 1. Refactor existing WebSocket endpoint [done]
+### Dependencies: None
+### Description: Modularize the existing /ws/voice endpoint in main.py to improve code organization and maintainability.
+### Details:
+Move the WebSocket logic to a separate module (e.g., websocket_handler.py). Create a WebSocketHandler class to encapsulate the endpoint functionality. Update main.py to use the new WebSocketHandler.
+<info added on 2025-06-08T01:19:35.410Z>
+# Refactoring Completed Successfully!
+
+## Implementation Details:
+
+### 1. Created `websocket_handler.py`
+- `WebSocketHandler` class encapsulates all WebSocket logic
+- Methods organized by responsibility:
+  - `handle_connection()`: Manages connection lifecycle
+  - `_process_message()`: Routes messages by type
+  - `_handle_text_message()` / `_handle_audio_message()`: Type-specific processing
+  - `_send_error_response()`: Standardized error handling
+  - `get_connection_count()`: Connection monitoring
+
+### 2. Refactored `main.py`
+- Removed inline WebSocket logic (was 40+ lines)
+- Now uses `WebSocketHandler` (just 1 line at the endpoint)
+- Added connection counter to `/health` endpoint
+- Code is much cleaner and more maintainable
+
+### 3. Improvements Implemented:
+- **Modularization**: Clear separation of responsibilities
+- **Enhanced logging**: Connection counters and better tracking
+- **Error handling**: Standardized error responses
+- **Precise timestamps**: ISO format with UTC
+- **Monitoring**: Active connection counter
+
+The structure is now ready for the upcoming subtasks (ConnectionManager, structured protocol, etc.)
+</info added on 2025-06-08T01:19:35.410Z>
+
+## 2. Implement ConnectionManager class [done]
+### Dependencies: 2.1
+### Description: Create a ConnectionManager class to handle multiple concurrent WebSocket connections efficiently.
+### Details:
+Implement methods for connecting, disconnecting, and sending messages to multiple clients. Include functionality to broadcast messages to all connected clients or send to specific clients.
+<info added on 2025-06-08T01:23:03.325Z>
+# ConnectionManager Implementation
+
+## Core Implementation:
+- Created `connection_manager.py` with a comprehensive ConnectionManager class
+- Implemented key methods:
+  - `connect()`: Registers new connections with unique UUID
+  - `disconnect()`: Removes connections and cleans metadata
+  - `send_to_connection()`: Sends messages to specific connections
+  - `send_bytes_to_connection()`: Sends binary data to specific connections
+  - `broadcast_message()`: Sends messages to all connections (with optional exclusions)
+  - `get_connection_info()`: Retrieves detailed connection information
+  - `get_all_connections_info()`: Gets information for all connections
+
+## Integration with WebSocketHandler:
+- Updated WebSocketHandler to utilize ConnectionManager
+- Added unique IDs and complete metadata for each connection
+- Implemented broadcast support for client-to-client communication
+- Enhanced logging with connection IDs for better tracking
+- Added automatic error handling with cleanup for invalid connections
+
+## Monitoring and Advanced Features:
+- Created `/ws/connections` endpoint to view active connections
+- Added per-connection metadata tracking (connection timestamp, last activity, message counter)
+- Optimized performance with concurrent sends via `asyncio.gather()`
+- Implemented selective broadcasting with exclusion lists
+- Added automatic cleanup of failed connections
+- Enabled real-time monitoring through REST endpoint
+
+The system now robustly supports multiple simultaneous connections with complete tracking capabilities.
+</info added on 2025-06-08T01:23:03.325Z>
+
+## 3. Develop structured message protocol [done]
+### Dependencies: 2.1
+### Description: Design and implement a structured message protocol for different types of WebSocket communications.
+### Details:
+Define message types for audio data, text, and status updates. Create a MessageProtocol class to handle serialization and deserialization of these structured messages. Update the WebSocketHandler to use the new protocol.
+<info added on 2025-06-08T01:26:34.307Z>
+# Message Protocol Implementation
+
+## Core Components
+- Created `message_protocol.py` with a complete messaging system
+- Implemented 13 well-defined message types (input and output)
+- Used Pydantic for data validation and integrity
+- Structured Enums: MessageType and AudioFormat for consistency
+- Specialized classes for each message type
+
+## Message Types
+### Input Messages (client → server):
+- `TEXT`: Simple text messages
+- `AUDIO_DATA`: Base64 encoded audio data
+- `BROADCAST_REQUEST`: Broadcast requests
+- `CONNECTION_INFO_REQUEST`: Connection information requests
+- `PING`: Connectivity verification
+
+### Output Messages (server → client):
+- `RESPONSE`: Response to text messages
+- `AUDIO_RECEIVED`: Audio receipt confirmation
+- `BROADCAST`: Broadcast message to other clients
+- `BROADCAST_CONFIRMATION`: Broadcast sent confirmation
+- `CONNECTION_INFO`: Detailed connection information
+- `STATUS_UPDATE`: System status updates
+- `ERROR`: Structured error messages
+- `PONG`: Response to ping
+
+## WebSocketHandler Refactoring
+- Full integration with MessageProtocol
+- Automatic routing based on message type
+- Automatic validation with error handling
+- Performance measurement with processing time
+- New handler system specific to each message type
+
+## Advanced Features
+- Automatic base64 audio validation
+- Automatic ISO 8601 timestamps
+- Structured error codes for programming
+- Safe serialization/deserialization
+- Support for multiple audio formats
+- Directed broadcasting (specific connections)
+- Processing time measurement
+
+## Documentation Endpoint
+- `/ws/protocol`: Complete protocol documentation
+- Message examples for development
+- Description of supported audio formats
+- Implementation notes for integration
+</info added on 2025-06-08T01:26:34.307Z>
+
+## 4. Implement comprehensive error handling [done]
+### Dependencies: 2.1, 2.2
+### Description: Enhance the WebSocket implementation with robust error handling and reconnection logic.
+### Details:
+Add try-except blocks to catch and handle specific exceptions. Implement automatic reconnection attempts for temporary disconnections. Create custom exception classes for WebSocket-specific errors.
+<info added on 2025-06-08T01:32:16.429Z>
+# Comprehensive Error Handling System
+
+## Custom Exception Classes (`exceptions.py`)
+- **WebSocketError**: Base class with severity, automatic logging and dict conversion
+- **Specific exceptions**: ConnectionError, MessageParsingError, AudioProcessingError, BroadcastError, ProtocolViolationError, RateLimitError, SystemOverloadError, SecurityError, ConfigurationError
+- **ErrorSeverity**: LOW, MEDIUM, HIGH, CRITICAL
+- **Factory pattern**: `create_error()` for automatic exception creation
+- **Intelligent logging**: Log level based on severity
+- **Serialization**: `to_dict()` method for WebSocket transmission
+
+## Error Recovery System (`error_recovery.py`)
+- **Circuit Breaker Pattern**: CLOSED → OPEN → HALF_OPEN with configurable thresholds
+- **Retry Logic**: Exponential backoff with jitter to prevent thundering herd
+- **Health Monitoring**: HEALTHY, DEGRADED, UNHEALTHY, CRITICAL
+- **Configurations**: RetryConfig (3 attempts, delays 0.5s-10s) and CircuitBreakerConfig (5 failures to open)
+- **Error history**: Deque with 1000 maximum records
+- **Callbacks**: Notifications for circuit opening/closing and critical errors
+- **Statistics**: Detailed analysis by severity and type
+
+## WebSocketHandler Integration
+- **Recovery execution**: `execute_with_recovery()` for all critical operations
+- **Robust handling**: Specific try-catch for each error type
+- **Automatic conversion**: Exception → WebSocketError with preserved context
+- **Intelligent cleanup**: Safe disconnection even in error cases
+- **Error routing**: Different handlers for different error types
+- **Configured callbacks**: Logging of circuit breaker and critical errors
+
+## Monitoring Endpoints (`main.py`)
+- **`/health`**: Basic status with circuit breaker state
+- **`/health/detailed`**: Complete diagnostics with error statistics
+- **`/admin/circuit-breaker/reset`**: Manual circuit breaker reset
+- **`/admin/errors/recent`**: View of recent errors (1-60 minutes)
+- **Updated documentation**: `/ws/protocol` includes error handling info
+
+## Robustness Metrics
+- **Recovery time**: 30s for circuit breaker
+- **Retry attempts**: 3x with exponential backoff
+- **History capacity**: 1000 error records
+- **Monitoring granularity**: 5 minutes for recent analysis
+- **Configurable thresholds**: 5 failures to open circuit
+</info added on 2025-06-08T01:32:16.429Z>
+
+## 5. Add detailed logging and monitoring [done]
+### Dependencies: 2.1, 2.2, 2.3, 2.4
+### Description: Implement comprehensive logging for WebSocket events, errors, and performance metrics.
+### Details:
+Use Python's logging module to log connection events, errors, and message traffic. Implement performance monitoring to track metrics like connection count, message rate, and latency. Create a dashboard or reporting mechanism for these logs and metrics.
+<info added on 2025-06-08T01:39:24.710Z>
+# Advanced Logging and Monitoring System Implementation
+
+## Performance Monitoring System (`performance_monitor.py`)
+- **PerformanceMonitor**: Main class with automatic metrics collection
+- **Metric types**: CONNECTION, MESSAGE, ERROR, PERFORMANCE, SYSTEM
+- **Intelligent retention**: 24-hour default with automatic cleanup
+- **Thread-safe**: Locks for safe concurrent access
+- **Real-time metrics**: Collection every 30 seconds
+- **Export formats**: JSON and Prometheus
+- **System metrics**: CPU, memory (if psutil available)
+- **Advanced statistics**: P95, averages, counters, timers
+
+## Structured Logging System (`structured_logger.py`)
+- **WebSocketLogger**: Specialized WebSocket logger
+- **JSON formatting**: StructuredFormatter for structured logs
+- **Context Variables**: Context tracking across async calls
+- **Specific logs**: connection_started, message_sent, error_occurred, broadcast_sent
+- **@log_async_operation decorator**: Auto-logging operations with timing
+- **Environment configuration**: Development vs production
+- **Log files**: Console + rotating file
+
+## WebSocketHandler Integration
+- **Automatic monitoring**: All operations record metrics
+- **Detailed logging**: Each event has specific structured log
+- **Performance tracking**: Response time, throughput, latency
+- **Intelligent cleanup**: Disconnections recorded with duration and reason
+- **Error correlation**: Errors correlated with metrics and logs
+- **Circuit breaker events**: State change logs
+
+## Monitoring Dashboard and APIs (main.py)
+- **`/monitoring/dashboard`**: Complete real-time dashboard
+- **`/monitoring/metrics`**: Filterable metrics (JSON/Prometheus)
+- **`/monitoring/connections`**: Detailed metrics per connection
+- **`/monitoring/errors`**: Error analysis with timeline
+- **`/monitoring/performance/realtime`**: Real-time data (5min)
+- **`/admin/monitoring/reset`**: Metrics reset for testing
+
+## Advanced Features
+- **Real-time aggregations**: Connections/min, messages/min, error rate
+- **Trends**: Connection, message, and error trends
+- **Per-connection metrics**: Bytes sent/received, average response time
+- **Error analysis**: By type, severity, chronological timeline
+- **Health status**: HEALTHY → DEGRADED → UNHEALTHY → CRITICAL
+- **Auto-cleanup**: Automatic removal of old data
+
+## ConnectionManager Improvements
+- **`disconnect_by_id()`**: Additional method for disconnection by ID
+- **Advanced metadata**: Disconnection tracking, statistics
+- **Automatic cleanup**: Removal of old metadata (24h)
+- **Summary statistics**: get_statistics() with aggregations
+
+The system is production-ready with enterprise-grade monitoring capabilities.
+</info added on 2025-06-08T01:39:24.710Z>
+
