@@ -14,16 +14,16 @@ else:
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
-from .core.config import settings
-from .core.websocket_handler import WebSocketHandler
-from .core.message_protocol import MessageProtocol
-from .core.error_recovery import HealthStatus
-from .core.performance_monitor import performance_monitor, MetricType
-from .core.structured_logger import websocket_logger, setup_logging
-from .core.app import GeminiHomeAssistantApp
-from .core.exceptions import SessionNotFoundError, AudioProcessingError, IntegrationError
-from .core.config_validator import validate_app_config, ConfigValidator
-from .models.config import ApplicationConfig
+from poc_app.core.config import settings
+from poc_app.core.websocket_handler import WebSocketHandler
+from poc_app.core.message_protocol import MessageProtocol
+from poc_app.core.error_recovery import HealthStatus
+from poc_app.core.performance_monitor import performance_monitor, MetricType
+from poc_app.core.structured_logger import websocket_logger, setup_logging
+from poc_app.core.app import GeminiHomeAssistantApp
+from poc_app.core.exceptions import SessionNotFoundError, AudioProcessingError, IntegrationError
+from poc_app.core.config_validator import validate_app_config, ConfigValidator
+from poc_app.models.config import ApplicationConfig
 import logging
 import uvicorn
 import asyncio
@@ -747,22 +747,24 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Receber dados (pode ser JSON ou binário)
                 raw_data = await websocket.receive()
                 
-                # Verificar se é mensagem de texto (JSON) ou dados binários
+                # DEBUG: Log completo do que está sendo recebido
+                logger.info(f"🔍 [DEBUG-RECEIVE] Dados recebidos: type={raw_data.get('type', 'NO_TYPE')}")
+                logger.info(f"🔍 [DEBUG-RECEIVE] Keys disponíveis: {list(raw_data.keys())}")
+                if "text" in raw_data:
+                    logger.info(f"🔍 [DEBUG-RECEIVE] Text content: {raw_data['text'][:200]}...")
+                if "bytes" in raw_data:
+                    logger.info(f"🔍 [DEBUG-RECEIVE] Bytes length: {len(raw_data['bytes'])}")
+                
+                # Verificar se cliente foi inicializado
                 if raw_data.get("type") == "websocket.receive":
                     if "text" in raw_data and not client_initialized:
-                        # Mensagem de inicialização JSON
+                        # Primeira mensagem deve ser inicialização
                         try:
                             message = json.loads(raw_data["text"])
-                            if message.get("type") == "status" and message.get("content") == "client_connected":
+                            logger.info(f"🔍 [DEBUG-JSON] Message parsed: {message}")
+                            if message.get("type") == "init":
                                 client_initialized = True
                                 logger.info(f"Cliente inicializado para sessão {session_id}")
-                                
-                                # Enviar mensagem de boas-vindas
-                                await websocket.send_json({
-                                    "type": "response",
-                                    "content": "Olá! Bem-vindo ao assistente de voz do Home Assistant. Como posso ajudá-lo hoje?",
-                                    "timestamp": datetime.now().isoformat()
-                                })
                                 
                                 # Gerar e enviar áudio de boas-vindas usando função com WebSocket streaming
                                 try:
@@ -776,19 +778,60 @@ async def websocket_endpoint(websocket: WebSocket):
                                             "timestamp": datetime.now().isoformat()
                                         })
                                     
-                                    # DEPRECATED: Audio consolidado removido - agora usa streaming via chunks
-                                    # O áudio já é enviado via streaming chunks no método send_welcome_message_with_websocket
-                                    # if welcome_result.get("audio_response"):
-                                    #     await websocket.send_json({
-                                    #         "type": "audio_response",
-                                    #         "has_audio": True,
-                                    #         "timestamp": datetime.now().isoformat()
-                                    #     })
-                                    #     await websocket.send_bytes(welcome_result["audio_response"])
                                 except Exception as e:
                                     logger.warning(f"Não foi possível gerar áudio de boas-vindas: {e}")
                                     # Não é um erro crítico, continuar sem áudio
                                 
+                                continue
+                            elif message.get("type") == "start_recording":
+                                # Iniciar gravação manual
+                                logger.info(f"🎙️ [MANUAL-START] Iniciando gravação para sessão {session_id}")
+                                try:
+                                    # 🔥 GARANTIR SESSÃO PERSISTENTE ESTÁ ATIVA
+                                    await gemini_ha_app._ensure_global_session()
+                                    
+                                    if not gemini_ha_app._session_healthy:
+                                        logger.error(f"❌ [START-RECORDING] Sessão persistente não está saudável")
+                                        raise Exception("Sessão persistente não está saudável")
+                                    
+                                    await gemini_ha_app.gemini_client.start_recording()
+                                    await websocket.send_json({
+                                        "type": "recording_started",
+                                        "message": "Gravação iniciada",
+                                        "timestamp": datetime.now().isoformat()
+                                    })
+                                except Exception as e:
+                                    logger.error(f"Erro ao iniciar gravação: {e}")
+                                    await websocket.send_json({
+                                        "type": "error",
+                                        "message": f"Erro ao iniciar gravação: {e}",
+                                        "timestamp": datetime.now().isoformat()
+                                    })
+                                continue
+                            elif message.get("type") == "stop_recording":
+                                # Método simplificado baseado no script oficial Google
+                                logger.info(f"🛑 [SIMPLE-STOP] Stop recording - método simplificado")
+                                try:
+                                    # Para de aceitar novos áudios
+                                    await gemini_ha_app.gemini_client.stop_recording()
+                                    
+                                    # Confirma que parou
+                                    await websocket.send_json({
+                                        "type": "recording_stopped",
+                                        "message": "Gravação finalizada",
+                                        "timestamp": datetime.now().isoformat()
+                                    })
+                                    
+                                    # Inicia coleta de resposta em background (como Google faz)
+                                    asyncio.create_task(gemini_ha_app.simple_collect_response(session_id, websocket))
+                                    
+                                except Exception as e:
+                                    logger.error(f"❌ [SIMPLE-STOP] Erro: {e}")
+                                    await websocket.send_json({
+                                        "type": "error",
+                                        "message": f"Erro ao processar: {str(e)}",
+                                        "timestamp": datetime.now().isoformat()
+                                    })
                                 continue
                             elif message.get("type") == "status" and message.get("content") == "client_disconnecting":
                                 logger.info(f"Cliente desconectando sessão {session_id}")
@@ -796,100 +839,105 @@ async def websocket_endpoint(websocket: WebSocket):
                         except json.JSONDecodeError:
                             logger.warning("Mensagem JSON inválida recebida durante inicialização")
                             continue
+                    elif "text" in raw_data and client_initialized:
+                        # Processar mensagens de controle mesmo após inicialização
+                        try:
+                            message = json.loads(raw_data["text"])
+                            logger.info(f"🔍 [DEBUG-JSON-INIT] Message after init: {message}")
+                            
+                            if message.get("type") == "start_recording":
+                                # Iniciar gravação manual
+                                logger.info(f"🎙️ [MANUAL-START] Iniciando gravação para sessão {session_id}")
+                                try:
+                                    # 🔥 GARANTIR SESSÃO PERSISTENTE ESTÁ ATIVA
+                                    await gemini_ha_app._ensure_global_session()
+                                    
+                                    if not gemini_ha_app._session_healthy:
+                                        logger.error(f"❌ [START-RECORDING] Sessão persistente não está saudável")
+                                        raise Exception("Sessão persistente não está saudável")
+                                    
+                                    await gemini_ha_app.gemini_client.start_recording()
+                                    await websocket.send_json({
+                                        "type": "recording_started",
+                                        "message": "Gravação iniciada",
+                                        "timestamp": datetime.now().isoformat()
+                                    })
+                                except Exception as e:
+                                    logger.error(f"Erro ao iniciar gravação: {e}")
+                                    await websocket.send_json({
+                                        "type": "error",
+                                        "message": f"Erro ao iniciar gravação: {e}",
+                                        "timestamp": datetime.now().isoformat()
+                                    })
+                                continue
+                            elif message.get("type") == "stop_recording":
+                                # Método simplificado baseado no script oficial Google
+                                logger.info(f"🛑 [SIMPLE-STOP] Stop recording - método simplificado (pós-init)")
+                                try:
+                                    # Para de aceitar novos áudios
+                                    await gemini_ha_app.gemini_client.stop_recording()
+                                    
+                                    # Confirma que parou
+                                    await websocket.send_json({
+                                        "type": "recording_stopped",
+                                        "message": "Gravação finalizada",
+                                        "timestamp": datetime.now().isoformat()
+                                    })
+                                    
+                                    # Inicia coleta de resposta em background (como Google faz)
+                                    asyncio.create_task(gemini_ha_app.simple_collect_response(session_id, websocket))
+                                    
+                                except Exception as e:
+                                    logger.error(f"❌ [SIMPLE-STOP] Erro: {e}")
+                                    await websocket.send_json({
+                                        "type": "error",
+                                        "message": f"Erro ao processar: {str(e)}",
+                                        "timestamp": datetime.now().isoformat()
+                                    })
+                                continue
+                            elif message.get("type") == "status" and message.get("content") == "client_disconnecting":
+                                logger.info(f"Cliente desconectando sessão {session_id}")
+                                break
+                        except json.JSONDecodeError as e:
+                            logger.warning(f"Mensagem JSON inválida recebida após inicialização: {e}")
+                            continue
                     elif "bytes" in raw_data and client_initialized:
-                        # Dados de áudio - processar normalmente
+                        # Dados de áudio - processar imediatamente em tempo real
                         audio_chunk = raw_data["bytes"]
                         logger.debug(f"🎤 [AUDIO-IN] Recebendo chunk de áudio: {len(audio_chunk)} bytes")
                         
-                        # Adicionar ao buffer
-                        audio_buffer.extend(audio_chunk)
+                        try:
+                            # 🔥 VERIFICAR SESSÃO PERSISTENTE ANTES DE ENVIAR
+                            if not gemini_ha_app._session_healthy:
+                                logger.warning(f"⚠️ [DISCONNECTED] Sessão persistente não saudável, ignorando chunk de áudio")
+                                continue
+                            
+                            # Enviar chunk imediatamente para o Gemini (streaming em tempo real)
+                            logger.debug(f"🔄 [REAL-TIME] Enviando chunk de {len(audio_chunk)} bytes para Gemini (sessão persistente)")
+                            
+                            # Enviar chunk diretamente para o Gemini
+                            await gemini_ha_app.gemini_client.send_audio_data(audio_chunk)
+                            logger.debug(f"✅ [REAL-TIME] Chunk enviado com sucesso para Gemini")
+                            
+                        except Exception as e:
+                            if "keepalive ping timeout" in str(e):
+                                logger.warning(f"⚠️ [KEEPALIVE-TIMEOUT] Conexão com Gemini perdida (sessão {session_id}). Ignorando chunks futuros até reconnect.")
+                                # Não quebrar o loop, apenas parar de enviar chunks
+                                continue
+                            else:
+                                logger.warning(f"❌ [AUDIO-ERROR] Erro ao enviar chunk para Gemini: {e}")
                         
-                        # Verificar se é hora de processar o áudio acumulado
-                        now = datetime.now()
-                        time_since_last_processing = (now - last_processing_time).total_seconds()
-                        
-                        # Processar quando tiver dados suficientes ou após intervalo de tempo
-                        min_buffer_size = 16000 * 2 * 1  # 1 segundo de áudio (16kHz, 16-bit)
-                        should_process = (len(audio_buffer) >= min_buffer_size and 
-                                        time_since_last_processing >= processing_interval)
-                        
-                        if should_process:
+                        # Enviar confirmação de recebimento periodicamente
+                        if len(audio_chunk) > 0:  # Confirmar cada chunk recebido
                             try:
-                                # Processar áudio acumulado com streaming via WebSocket
-                                logger.info(f"🔄 [PROCESSING] Iniciando processamento de {len(audio_buffer)} bytes de áudio (sessão: {session_id})")
-                                result = await gemini_ha_app.process_audio_with_websocket(session_id, bytes(audio_buffer), websocket)
-                                logger.info(f"✅ [PROCESSING] Processamento concluído. Resultado: {type(result)}")
-                                
-                                # Limpar buffer após processamento
-                                audio_buffer.clear()
-                                last_processing_time = now
-                                
-                                # Enviar transcrição se disponível
-                                if result.get("transcription"):
-                                    await websocket.send_json({
-                                        "type": "transcription",
-                                        "content": result["transcription"],
-                                        "timestamp": datetime.now().isoformat()
-                                    })
-                                
-                                # Enviar resultado de função se disponível
-                                if result.get("function_result"):
-                                    await websocket.send_json({
-                                        "type": "function_result",
-                                        "result": result["function_result"],
-                                        "timestamp": datetime.now().isoformat()
-                                    })
-                                
-                                # DEPRECATED: Audio consolidado removido - agora usa streaming via chunks
-                                # O áudio já é enviado via streaming chunks no método process_audio_with_websocket
-                                # if result.get("audio_response"):
-                                #     await websocket.send_json({
-                                #         "type": "audio_response",
-                                #         "has_audio": True,
-                                #         "timestamp": datetime.now().isoformat()
-                                #     })
-                                #     await websocket.send_bytes(result["audio_response"])
-                                    
-                            except SessionNotFoundError as e:
-                                logger.error(f"Erro de sessão: {e}")
                                 await websocket.send_json({
-                                    "type": "error",
-                                    "error_code": "SESSION_ERROR",
-                                    "message": "Sessão não encontrada, reconectando...",
+                                    "type": "audio_received",
+                                    "chunk_size": len(audio_chunk),
                                     "timestamp": datetime.now().isoformat()
                                 })
-                                # Tentar recriar a sessão
-                                session_id = await gemini_ha_app.create_session()
+                            except Exception as send_error:
+                                logger.debug(f"Erro ao enviar confirmação: {send_error}")
                                 
-                            except AudioProcessingError as e:
-                                logger.warning(f"Erro de processamento de áudio: {e}")
-                                await websocket.send_json({
-                                    "type": "error",
-                                    "error_code": "AUDIO_PROCESSING_ERROR",
-                                    "message": "Erro no processamento de áudio - continuando...",
-                                    "timestamp": datetime.now().isoformat()
-                                })
-                                # Limpar buffer e continuar
-                                audio_buffer.clear()
-                                
-                            except Exception as e:
-                                logger.error(f"Erro inesperado no processamento: {e}")
-                                await websocket.send_json({
-                                    "type": "error",
-                                    "error_code": "PROCESSING_ERROR", 
-                                    "message": f"Erro interno: {str(e)}",
-                                    "timestamp": datetime.now().isoformat()
-                                })
-                                # Limpar buffer e continuar
-                                audio_buffer.clear()
-                        
-                        # Enviar confirmação de recebimento do chunk
-                        if len(audio_buffer) % (8192 * 4) == 0:  # A cada ~32KB
-                            await websocket.send_json({
-                                "type": "audio_received",
-                                "buffer_size": len(audio_buffer),
-                                "timestamp": datetime.now().isoformat()
-                            })
                     elif "bytes" in raw_data and not client_initialized:
                         # Dados de áudio recebidos antes da inicialização - ignorar
                         logger.warning("Dados de áudio recebidos antes da inicialização do cliente")

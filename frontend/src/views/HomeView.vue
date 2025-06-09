@@ -132,27 +132,88 @@
               Controles de Áudio
             </h2>
             
+            <!-- Seletor de modo -->
+            <div class="mode-selector">
+              <label class="mode-toggle">
+                <input 
+                  type="checkbox" 
+                  v-model="useManualMode"
+                  @change="handleModeToggle"
+                />
+                <span class="mode-slider"></span>
+                <span class="mode-text">
+                  {{ useManualMode ? '🎙️ Modo Manual' : '🤖 Modo Automático (VAD)' }}
+                </span>
+              </label>
+            </div>
+            
             <div class="audio-controls">
-              <!-- Botão principal de gravação -->
-              <button
-                :class="['mic-button', { 
-                  'active': store.isRecording,
-                  'connecting': store.isConnecting,
-                  'disabled': !store.canRecord && !store.isRecording,
-                  'error': store.hasError
-                }]"
-                @click="handleToggleRecording"
-                :disabled="store.isConnecting"
-                :title="getMicButtonTooltip()"
-              >
-                <span class="mic-icon">
-                  {{ getMicButtonIcon() }}
-                </span>
-                <span class="mic-text">
-                  {{ getMicButtonText() }}
-                </span>
-                <div v-if="store.isRecording" class="recording-pulse"></div>
-              </button>
+              <!-- Controles Manuais -->
+              <div v-if="useManualMode" class="manual-controls">
+                <div class="manual-buttons">
+                  <button
+                    :class="['manual-start-button', { 
+                      'disabled': !store.isConnected || store.isRecording
+                    }]"
+                    @click="handleManualStart"
+                    :disabled="!store.isConnected || store.isRecording"
+                    title="Pressione para começar a falar"
+                  >
+                    <span class="button-icon">🎤</span>
+                    {{ store.isRecording ? 'Gravando...' : 'Começar a Falar' }}
+                  </button>
+                  
+                  <button
+                    :class="['manual-stop-button', { 
+                      'disabled': !store.isRecording,
+                      'active': store.isRecording
+                    }]"
+                    @click="handleManualStop"
+                    :disabled="!store.isRecording"
+                    title="Pressione quando terminar de falar"
+                  >
+                    <span class="button-icon">⏹️</span>
+                    Terminar de Falar
+                  </button>
+                </div>
+                
+                <div class="manual-status">
+                  <div v-if="store.isRecording" class="recording-indicator">
+                    <div class="recording-dot"></div>
+                    <span>Gravando... Clique em "Terminar" quando acabar</span>
+                  </div>
+                  <div v-else-if="store.isConnected" class="ready-indicator">
+                    <span>✅ Pronto - Clique em "Começar a Falar"</span>
+                  </div>
+                  <div v-else class="disconnected-indicator">
+                    <span>🔌 Conecte-se primeiro</span>
+                  </div>
+                </div>
+              </div>
+              
+              <!-- Controles Automáticos (original) -->
+              <div v-else class="automatic-controls">
+                <!-- Botão principal de gravação -->
+                <button
+                  :class="['mic-button', { 
+                    'active': store.isRecording,
+                    'connecting': store.isConnecting,
+                    'disabled': !store.canRecord && !store.isRecording,
+                    'error': store.hasError
+                  }]"
+                  @click="handleToggleRecording"
+                  :disabled="store.isConnecting"
+                  :title="getMicButtonTooltip()"
+                >
+                  <span class="mic-icon">
+                    {{ getMicButtonIcon() }}
+                  </span>
+                  <span class="mic-text">
+                    {{ getMicButtonText() }}
+                  </span>
+                  <div v-if="store.isRecording" class="recording-pulse"></div>
+                </button>
+              </div>
 
               <!-- Controles avançados -->
               <div class="advanced-controls">
@@ -282,6 +343,7 @@ const audioWebSocket = useWebSocketAudio(wsUrl)
 const currentMediaStream = ref<MediaStream | null>(null)
 const isProcessingResponse = ref(false)
 const useContinuousMode = ref(false)
+const useManualMode = ref(true) // Iniciar no modo manual por ser mais confiável
 
 // Computed properties para textos dinâmicos
 const getConnectionStatusText = () => {
@@ -393,18 +455,75 @@ const handleCopyResponse = (text: string) => {
   console.log('Resposta copiada:', text)
 }
 
+// Funções de controle manual
+const handleManualStart = async () => {
+  try {
+    console.log('🎙️ [MANUAL] Iniciando gravação manual')
+    
+    if (!store.isConnected) {
+      await handleConnect()
+      await new Promise(resolve => setTimeout(resolve, 500)) // Aguardar conexão
+    }
+    
+    // Obter MediaStream para visualização
+    try {
+      currentMediaStream.value = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          sampleRate: 16000,
+          echoCancellation: true,
+          noiseSuppression: true
+        }
+      })
+    } catch (error) {
+      console.warn('Não foi possível obter MediaStream para visualização:', error)
+    }
+    
+    await audioWebSocket.startManualRecording()
+    store.addNotification('status', 'Gravação manual iniciada - fale agora!')
+  } catch (error) {
+    console.error('❌ [MANUAL] Erro ao iniciar gravação manual:', error)
+    store.setError('MANUAL_RECORDING_ERROR', 'Erro ao iniciar gravação manual', (error as Error).message)
+  }
+}
+
+const handleManualStop = async () => {
+  try {
+    console.log('🛑 [MANUAL] Parando gravação manual')
+    
+    audioWebSocket.stopManualRecording()
+    
+    // Limpar MediaStream
+    if (currentMediaStream.value) {
+      currentMediaStream.value.getTracks().forEach(track => track.stop())
+      currentMediaStream.value = null
+    }
+    
+    store.addNotification('status', 'Gravação finalizada - processando resposta...')
+  } catch (error) {
+    console.error('❌ [MANUAL] Erro ao parar gravação manual:', error)
+    store.setError('MANUAL_RECORDING_ERROR', 'Erro ao parar gravação manual', (error as Error).message)
+  }
+}
+
 const handleModeToggle = () => {
-  // Se estava no modo manual e está gravando, pare a gravação
-  if (!useContinuousMode.value && store.isRecording) {
-    audioWebSocket.stopAudioRecording()
+  // Se estava gravando no modo que está saindo, pare a gravação
+  if (store.isRecording) {
+    if (useManualMode.value) {
+      audioWebSocket.stopManualRecording()
+    } else {
+      audioWebSocket.stopAudioRecording()
+    }
+    
+    // Limpar MediaStream
+    if (currentMediaStream.value) {
+      currentMediaStream.value.getTracks().forEach(track => track.stop())
+      currentMediaStream.value = null
+    }
   }
   
-  // Se estava conectado no modo manual, desconecte
-  if (!useContinuousMode.value && store.isConnected) {
-    audioWebSocket.disconnect()
-  }
-  
-  console.log('🔄 Modo alterado para:', useContinuousMode.value ? 'Conversa Contínua' : 'Manual')
+  console.log('🔄 Modo alterado para:', useManualMode.value ? 'Manual' : 'Automático (VAD)')
+  store.addNotification('status', `Modo alterado para: ${useManualMode.value ? 'Manual' : 'Automático (VAD)'}`)
 }
 
 const handleRetry = async () => {
@@ -839,6 +958,195 @@ onUnmounted(() => {
 
 .clear-button { border-color: #6b7280; }
 .clear-button:hover:not(:disabled) { background-color: #6b7280; color: white; }
+
+/* Mode selector */
+.mode-selector {
+  margin-bottom: clamp(1rem, 2vw, 1.5rem);
+  padding: clamp(0.75rem, 2vw, 1rem);
+  background: #1f2937;
+  border: 1px solid #4b5563;
+  border-radius: 12px;
+}
+
+.mode-toggle {
+  display: flex;
+  align-items: center;
+  gap: clamp(0.75rem, 2vw, 1rem);
+  cursor: pointer;
+  font-size: clamp(0.9rem, 2.5vw, 1rem);
+  font-weight: 600;
+}
+
+.mode-toggle input[type="checkbox"] {
+  position: relative;
+  width: 60px;
+  height: 30px;
+  appearance: none;
+  background: #4b5563;
+  border-radius: 15px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  outline: none;
+}
+
+.mode-toggle input[type="checkbox"]:checked {
+  background: #10b981;
+}
+
+.mode-toggle input[type="checkbox"]:before {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 24px;
+  height: 24px;
+  background: white;
+  border-radius: 50%;
+  transition: all 0.3s ease;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.mode-toggle input[type="checkbox"]:checked:before {
+  transform: translateX(30px);
+}
+
+.mode-text {
+  color: #e5e7eb;
+  user-select: none;
+}
+
+/* Manual controls */
+.manual-controls {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(1rem, 2vw, 1.5rem);
+}
+
+.manual-buttons {
+  display: flex;
+  gap: clamp(0.75rem, 2vw, 1rem);
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.manual-start-button,
+.manual-stop-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: clamp(1rem, 3vw, 1.25rem) clamp(1.5rem, 4vw, 2rem);
+  border: 2px solid;
+  border-radius: 12px;
+  font-weight: 700;
+  font-size: clamp(0.9rem, 2.5vw, 1rem);
+  cursor: pointer;
+  transition: all 0.3s ease;
+  min-width: 160px;
+  text-align: center;
+}
+
+.manual-start-button {
+  background: #059669;
+  border-color: #10b981;
+  color: white;
+}
+
+.manual-start-button:hover:not(.disabled) {
+  background: #047857;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(5, 150, 105, 0.4);
+}
+
+.manual-stop-button {
+  background: #dc2626;
+  border-color: #ef4444;
+  color: white;
+}
+
+.manual-stop-button:hover:not(.disabled) {
+  background: #b91c1c;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(220, 38, 38, 0.4);
+}
+
+.manual-start-button.disabled,
+.manual-stop-button.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: #374151;
+  border-color: #4b5563;
+  color: #9ca3af;
+}
+
+.manual-stop-button.active {
+  animation: pulse-recording 2s infinite;
+}
+
+.manual-status {
+  text-align: center;
+  padding: clamp(0.75rem, 2vw, 1rem);
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: clamp(0.85rem, 2.5vw, 0.95rem);
+}
+
+.recording-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  background: rgba(220, 38, 38, 0.2);
+  border: 1px solid #ef4444;
+  color: #fee2e2;
+}
+
+.recording-dot {
+  width: 12px;
+  height: 12px;
+  background: #ef4444;
+  border-radius: 50%;
+  animation: pulse-dot 1.5s infinite;
+}
+
+.ready-indicator {
+  background: rgba(5, 150, 105, 0.2);
+  border: 1px solid #10b981;
+  color: #d1fae5;
+}
+
+.disconnected-indicator {
+  background: rgba(245, 158, 11, 0.2);
+  border: 1px solid #f59e0b;
+  color: #fef3c7;
+}
+
+/* Automatic controls (original) */
+.automatic-controls {
+  display: flex;
+  justify-content: center;
+}
+
+/* Animations */
+@keyframes pulse-recording {
+  0%, 100% { 
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.7);
+  }
+  50% { 
+    box-shadow: 0 0 0 10px rgba(220, 38, 38, 0);
+  }
+}
+
+@keyframes pulse-dot {
+  0%, 100% { 
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% { 
+    opacity: 0.5;
+    transform: scale(1.2);
+  }
+}
 
 /* Error section */
 .error-section {

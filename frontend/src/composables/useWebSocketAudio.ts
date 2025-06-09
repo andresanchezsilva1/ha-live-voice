@@ -6,12 +6,13 @@ import { AudioStreamer, useAudioStreamer } from './useAudioStreamer'
 import { useSharedAudioContext } from './useSharedAudioContext'
 
 export interface WebSocketMessage {
-  type: 'audio' | 'audio_response' | 'audio_chunk' | 'audio_complete' | 'transcription' | 'response' | 'error' | 'status' | 'connection_established' | 'audio_received'
+  type: 'audio' | 'audio_response' | 'audio_chunk' | 'audio_complete' | 'transcription' | 'response' | 'error' | 'status' | 'connection_established' | 'audio_received' | 'generation_complete' | 'recording_started' | 'recording_stopped'
   data?: any
   content?: string
   timestamp?: number
   has_audio?: boolean
   session_id?: string
+  message?: string
   // Audio streaming properties
   size?: number
   format?: string
@@ -23,6 +24,7 @@ export interface WebSocketMessage {
   channels?: number
   bits_per_sample?: number
   chunk_id?: string
+  chunk_count?: number
   buffer_size?: number
 }
 
@@ -138,8 +140,14 @@ export function useWebSocketAudio(wsUrl: string) {
       
       // AudioStreamer should already be initialized by audio_chunk handler
       if (!audioStreamer) {
-        console.warn('⚠️ [PCM-STREAM] AudioStreamer não encontrado, pulando chunk')
-        return
+        console.warn('⚠️ [PCM-STREAM] AudioStreamer não encontrado, tentando inicializar...')
+        await initializeAudioStreamerForNewStream(metadata?.sample_rate || 24000)
+        
+        if (!audioStreamer) {
+          console.error('❌ [PCM-STREAM] Falha ao inicializar AudioStreamer, pulando chunk')
+          return
+        }
+        console.log('✅ [PCM-STREAM] AudioStreamer inicializado com sucesso')
       }
       
       // Store metadata from first chunk
@@ -158,9 +166,10 @@ export function useWebSocketAudio(wsUrl: string) {
         console.log(`🎵 [PCM-DEBUG] Chunk ${chunkId} primeiros bytes: ${firstBytes}`)
         
         // Send directly to AudioStreamer
+        console.log(`🎵 [PCM-SEND] Enviando chunk ${chunkId} para AudioStreamer...`)
         audioStreamer.addPCM16(chunk)
         
-        console.log(`✅ [PCM-STREAM] Chunk ${chunkId} enviado para AudioStreamer`)
+        console.log(`✅ [PCM-STREAM] Chunk ${chunkId} enviado para AudioStreamer com sucesso`)
       } else {
         console.error('❌ [PCM-STREAM] AudioStreamer não disponível')
       }
@@ -304,7 +313,7 @@ export function useWebSocketAudio(wsUrl: string) {
         
         // Enviar mensagem de inicialização
         sendMessage({
-          type: 'status',
+          type: 'init',
           content: 'client_connected',
           timestamp: Date.now()
         })
@@ -386,11 +395,87 @@ export function useWebSocketAudio(wsUrl: string) {
    * Envia mensagem via WebSocket
    */
   const sendMessage = (message: any): void => {
+    console.log('📤 [SEND-MESSAGE] Tentando enviar mensagem:', message)
+    
     if (websocket.value && websocket.value.readyState === WebSocket.OPEN) {
+      console.log('📤 [SEND-MESSAGE] WebSocket está aberto, enviando...')
       websocket.value.send(JSON.stringify(message))
       lastMessageTimestamp.value = Date.now()
+      console.log('✅ [SEND-MESSAGE] Mensagem enviada com sucesso')
     } else {
-      console.warn('⚠️ WebSocket não está conectado, não é possível enviar mensagem')
+      console.warn('⚠️ [SEND-MESSAGE] WebSocket não está conectado:', {
+        websocketExists: !!websocket.value,
+        readyState: websocket.value?.readyState,
+        OPEN: WebSocket.OPEN
+      })
+    }
+  }
+
+  /**
+   * Inicia gravação manual (nova implementação)
+   */
+  const startManualRecording = async (): Promise<void> => {
+    console.log('🎙️ [MANUAL] Iniciando gravação manual')
+    
+    try {
+      // Verificar se WebSocket está conectado
+      if (!websocket.value || websocket.value.readyState !== WebSocket.OPEN) {
+        console.log('⚠️ WebSocket não conectado, conectando primeiro...')
+        await connect()
+      }
+      
+      // Enviar comando para backend iniciar gravação
+      sendMessage({
+        type: 'start_recording',
+        timestamp: Date.now()
+      })
+      
+      // Iniciar captura de áudio local
+      if (websocket.value) {
+        await startRecording('', {
+          channelCount: 1,
+          sampleRate: 16000,
+          echoCancellation: true,
+          noiseSuppression: true
+        }, websocket.value)
+      } else {
+        throw new Error('WebSocket não está disponível')
+      }
+      
+      console.log('✅ [MANUAL] Gravação manual iniciada')
+    } catch (error) {
+      console.error('❌ [MANUAL] Erro ao iniciar gravação manual:', error)
+      throw error
+    }
+  }
+
+  /**
+   * Para gravação manual (nova implementação)
+   */
+  const stopManualRecording = (): void => {
+    console.log('🛑 [MANUAL] Parando gravação manual')
+    
+    try {
+      // Parar captura de áudio local primeiro
+      stopRecording()
+      
+      // Preparar AudioStreamer para receber resposta de áudio
+      if (!audioStreamer || !isStreamingActive.value) {
+        console.log('🔄 [MANUAL] Preparando AudioStreamer para resposta')
+        initializeAudioStreamerForNewStream(24000).catch(error => {
+          console.error('❌ [MANUAL] Erro ao preparar AudioStreamer:', error)
+        })
+      }
+      
+      // Enviar comando para backend parar gravação e processar
+      sendMessage({
+        type: 'stop_recording',
+        timestamp: Date.now()
+      })
+      
+      console.log('✅ [MANUAL] Gravação manual parada, aguardando resposta...')
+    } catch (error) {
+      console.error('❌ [MANUAL] Erro ao parar gravação manual:', error)
     }
   }
 
@@ -412,16 +497,26 @@ export function useWebSocketAudio(wsUrl: string) {
   const handleWebSocketMessage = async (event: MessageEvent) => {
     lastMessageTimestamp.value = Date.now()
     
+    console.log('🔍 [WS-RAW] Received raw message:', { 
+      type: typeof event.data, 
+      isString: typeof event.data === 'string',
+      isArrayBuffer: event.data instanceof ArrayBuffer,
+      isBlob: event.data instanceof Blob,
+      size: event.data.length || event.data.byteLength || event.data.size || 'unknown',
+      preview: typeof event.data === 'string' ? event.data.substring(0, 200) : 'binary data'
+    })
+    
     try {
       // Handle JSON messages
       if (typeof event.data === 'string') {
         const message: WebSocketMessage = JSON.parse(event.data)
         
-        console.log('📨 Mensagem recebida:', {
+        console.log('📨 [JSON-MESSAGE] Mensagem recebida:', {
           type: message.type,
           hasContent: !!message.content,
           hasData: !!message.data,
-          timestamp: message.timestamp
+          timestamp: message.timestamp,
+          size: message.size
         })
 
         switch (message.type) {
@@ -452,13 +547,14 @@ export function useWebSocketAudio(wsUrl: string) {
             break
 
           case 'audio_chunk':
-            console.log('🎵 [AUDIO-CHUNK] Metadata recebido:', {
+            console.log('🎵 [AUDIO-CHUNK-META] Metadata recebido:', {
               size: message.size,
               format: message.format,
               streaming: message.streaming,
               chunks_sent: message.chunks_sent,
               sample_rate: message.sample_rate,
-              chunk_id: message.chunk_id
+              chunk_id: message.chunk_id,
+              chunk_count: message.chunk_count
             })
             
             // Só inicializar AudioStreamer se não temos um stream ativo OU se há mudança significativa no sample rate
@@ -483,6 +579,8 @@ export function useWebSocketAudio(wsUrl: string) {
               streaming: message.streaming
             }
             isStreamingActive.value = true
+            
+            console.log('🎵 [AUDIO-CHUNK-META] Aguardando chunk binário correspondente...')
             break
 
           case 'audio_complete':
@@ -492,6 +590,27 @@ export function useWebSocketAudio(wsUrl: string) {
             currentResponseId.value = null
             // Notificar que o áudio terminou para permitir reativação do VAD
             store.addNotification('status', 'Reprodução de áudio finalizada')
+            break
+
+          case 'generation_complete':
+            console.log('✅ [GENERATION-COMPLETE] Assistente terminou de responder:', message.message)
+            // Parar a gravação se estiver ativa para evitar conflitos
+            if (isRecording.value) {
+              console.log('🎤 [AUTO-STOP] Parando gravação automaticamente após resposta')
+              stopRecording()
+            }
+            // Notificar que o turno terminou
+            store.addNotification('status', message.message || 'Resposta do assistente concluída')
+            break
+
+          case 'recording_started':
+            console.log('🎙️ [RECORDING-STARTED] Backend confirmou início da gravação')
+            store.addNotification('status', message.message || 'Gravação iniciada no servidor')
+            break
+
+          case 'recording_stopped':
+            console.log('🛑 [RECORDING-STOPPED] Backend confirmou fim da gravação')
+            store.addNotification('status', message.message || 'Gravação finalizada, processando...')
             break
 
           case 'connection_established':
@@ -518,43 +637,50 @@ export function useWebSocketAudio(wsUrl: string) {
             break
 
           default:
-            console.log('⚠️ Tipo de mensagem desconhecido:', message.type)
+            console.log('⚠️ Tipo de mensagem desconhecido:', message.type, message)
         }
       }
       // Handle binary data (PCM chunks)
       else if (event.data instanceof ArrayBuffer) {
-        console.log('🎵 [BINARY] Chunk PCM recebido:', {
+        console.log('🎵 [BINARY-ARRAYBUFFER] Chunk PCM recebido:', {
           size: event.data.byteLength,
           hasMetadata: !!currentStreamMetadata.value,
-          isStreaming: isStreamingActive.value
+          isStreaming: isStreamingActive.value,
+          audioStreamerExists: !!audioStreamer,
+          audioStreamerActive: !!audioStreamer,
+          metadataDetails: currentStreamMetadata.value
         })
         
         if (currentStreamMetadata.value) {
+          console.log('🎵 [BINARY-PROCESS] Processando chunk com metadata:', currentStreamMetadata.value)
           processPCMChunk(event.data, currentStreamMetadata.value).catch(error => {
             console.error('❌ [BINARY] Erro ao processar chunk PCM:', error)
           })
         } else {
-          console.warn('⚠️ [BINARY] Chunk PCM recebido sem metadata, ignorando')
+          console.warn('⚠️ [BINARY-NO-META] Chunk PCM recebido sem metadata, ignorando. Tamanho:', event.data.byteLength)
         }
       }
       // Handle Blob data
       else if (event.data instanceof Blob) {
-        console.log('🎵 [BLOB] Chunk recebido como Blob:', {
+        console.log('🎵 [BINARY-BLOB] Chunk recebido como Blob:', {
           size: event.data.size,
-          type: event.data.type
+          type: event.data.type,
+          hasMetadata: !!currentStreamMetadata.value,
+          isStreaming: isStreamingActive.value
         })
         
         const arrayBuffer = await event.data.arrayBuffer()
         if (currentStreamMetadata.value) {
+          console.log('🎵 [BLOB-PROCESS] Processando chunk Blob convertido')
           processPCMChunk(arrayBuffer, currentStreamMetadata.value).catch(error => {
             console.error('❌ [BLOB] Erro ao processar chunk PCM:', error)
           })
         } else {
-          console.warn('⚠️ [BLOB] Chunk recebido sem metadata, ignorando')
+          console.warn('⚠️ [BLOB-NO-META] Chunk Blob recebido sem metadata, ignorando. Tamanho:', arrayBuffer.byteLength)
         }
       }
       else {
-        console.warn('⚠️ Tipo de dados desconhecido:', typeof event.data)
+        console.warn('⚠️ [UNKNOWN-TYPE] Tipo de dados desconhecido:', typeof event.data, event.data)
       }
     } catch (error) {
       console.error('❌ Erro ao processar mensagem WebSocket:', error)
@@ -659,6 +785,10 @@ export function useWebSocketAudio(wsUrl: string) {
     // Audio methods
     startAudioRecording,
     stopAudioRecording,
+    
+    // Manual recording methods (new)
+    startManualRecording,
+    stopManualRecording,
     
     // Audio playback controls (passthrough)
     setVolume,

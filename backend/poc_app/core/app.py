@@ -192,32 +192,47 @@ class GeminiHomeAssistantApp:
         """
         self.logger = WebSocketLogger("GeminiHomeAssistantApp")
         
+        # 🔥 SESSÃO PERSISTENTE GLOBAL
+        self.global_session = None
+        self.global_session_context = None
+        self.session_lock = asyncio.Lock()
+        self._session_healthy = False
+        
         # Initialize clients
         try:
-            self.gemini_client = GeminiLiveAPIClient(gemini_api_key, model="gemini-2.5-flash-preview-native-audio-dialog")
-            ha_config = HAClientConfig(base_url=ha_url, access_token=ha_token)
-            self.ha_client = HomeAssistantClient.from_config(ha_config)
+            self.gemini_client = GeminiLiveAPIClient(gemini_api_key)
             
-            self.logger.info("Clients initialized successfully")
+            # 🔥 CONFIGURAR FUNCTION DECLARATIONS DO HOME ASSISTANT
+            self.gemini_client.set_function_declarations(HA_FUNCTION_DECLARATIONS)
+            
+            self.logger.info(f"Cliente Gemini inicializado com {len(HA_FUNCTION_DECLARATIONS)} funções do Home Assistant")
         except Exception as e:
-            self.logger.error(f"Failed to initialize clients: {str(e)}")
-            raise IntegrationError(f"Client initialization failed: {str(e)}")
+            self.logger.error(f"Erro ao inicializar cliente Gemini: {e}")
+            raise
+        
+        try:
+            self.ha_client = HomeAssistantClient.from_config(HAClientConfig(base_url=ha_url, access_token=ha_token))
+            self.logger.info("Cliente Home Assistant inicializado com sucesso")
+        except Exception as e:
+            self.logger.error(f"Erro ao inicializar cliente Home Assistant: {e}")
+            raise
         
         # Session management
         self.active_sessions: Dict[str, SessionData] = {}
-        self.session_timeout_minutes = session_timeout_minutes
-        self.cleanup_interval_seconds = cleanup_interval_seconds
+        self.session_timeout = timedelta(minutes=session_timeout_minutes)
+        
+        # Background tasks
+        self.cleanup_interval = cleanup_interval_seconds
         self._cleanup_task: Optional[asyncio.Task] = None
         
-        self.logger.info(
-            "GeminiHomeAssistantApp initialized",
-            session_timeout_minutes=session_timeout_minutes,
-            cleanup_interval_seconds=cleanup_interval_seconds
-        )
+        self.logger.info(f"Aplicação inicializada - timeout: {session_timeout_minutes}min, cleanup: {cleanup_interval_seconds}s")
     
     async def start(self):
         """Start the application and background tasks"""
         self.logger.info("Starting GeminiHomeAssistantApp")
+        
+        # 🔥 INICIALIZAR SESSÃO PERSISTENTE
+        await self._ensure_global_session()
         
         # Start cleanup task
         self._cleanup_task = asyncio.create_task(self._session_cleanup_task())
@@ -227,6 +242,9 @@ class GeminiHomeAssistantApp:
     async def stop(self):
         """Stop the application and cleanup resources"""
         self.logger.info("Stopping GeminiHomeAssistantApp")
+        
+        # 🔥 FECHAR SESSÃO PERSISTENTE
+        await self._close_global_session()
         
         # Cancel cleanup task
         if self._cleanup_task:
@@ -242,6 +260,80 @@ class GeminiHomeAssistantApp:
         
         self.logger.info("GeminiHomeAssistantApp stopped")
     
+    async def _ensure_global_session(self):
+        """
+        Garante que temos uma sessão global ativa e saudável
+        """
+        async with self.session_lock:
+            if self.global_session is None or not self._session_healthy:
+                try:
+                    self.logger.info("🔄 [GLOBAL-SESSION] Criando nova sessão persistente")
+                    
+                    # Fechar sessão anterior se existir
+                    if self.global_session_context:
+                        try:
+                            await self.global_session_context.__aexit__(None, None, None)
+                        except:
+                            pass
+                    
+                    # Criar nova sessão
+                    self.global_session_context = await self.gemini_client.connect_audio_session(
+                        system_instruction=f"Você é um assistente inteligente integrado ao Home Assistant. Responda sempre em português brasileiro de forma natural e amigável.",
+                        voice_name="Kore",
+                        language_code="pt-BR",
+                        enable_function_calling=True
+                    )
+                    
+                    # Entrar no context manager
+                    self.global_session = await self.global_session_context.__aenter__()
+                    self.gemini_client.session = self.global_session
+                    self.gemini_client.is_connected = True
+                    self._session_healthy = True
+                    
+                    self.logger.info("✅ [GLOBAL-SESSION] Sessão persistente criada com sucesso")
+                    
+                except Exception as e:
+                    self.logger.error(f"❌ [GLOBAL-SESSION] Erro ao criar sessão persistente: {e}")
+                    self._session_healthy = False
+                    raise
+    
+    async def _close_global_session(self):
+        """
+        Fecha a sessão global de forma segura
+        """
+        async with self.session_lock:
+            try:
+                if self.global_session_context:
+                    await self.global_session_context.__aexit__(None, None, None)
+                    self.logger.info("🔄 [GLOBAL-SESSION] Sessão persistente fechada")
+                
+                self.global_session = None
+                self.global_session_context = None
+                self.gemini_client.session = None
+                self.gemini_client.is_connected = False
+                self._session_healthy = False
+                
+            except Exception as e:
+                self.logger.error(f"❌ [GLOBAL-SESSION] Erro ao fechar sessão: {e}")
+    
+    async def _check_session_health(self):
+        """
+        Verifica se a sessão global está saudável
+        """
+        try:
+            # Verificar se a conexão ainda está ativa
+            if not self.gemini_client.is_connected or self.global_session is None:
+                self._session_healthy = False
+                return False
+            
+            # TODO: Adicionar ping/health check se disponível na API
+            return True
+            
+        except Exception as e:
+            self.logger.warning(f"⚠️ [GLOBAL-SESSION] Health check falhou: {e}")
+            self._session_healthy = False
+            return False
+
     async def create_session(self, session_id: Optional[str] = None) -> str:
         """
         Create a new session with Gemini Live API.
@@ -264,9 +356,6 @@ class GeminiHomeAssistantApp:
         
         try:
             self.logger.info(f"Creating session {session_id}")
-            
-            # Configurar function declarations para o cliente oficial
-            self.gemini_client.set_function_declarations(HA_FUNCTION_DECLARATIONS)
             
             # Usar o método oficial da Live API para conectar
             system_instruction = "Você é um assistente de casa inteligente em português brasileiro. Responda de forma natural e amigável. Quando controlar dispositivos, forneça confirmações claras em português."
@@ -513,12 +602,13 @@ class GeminiHomeAssistantApp:
         collected_text = []
         collected_audio = []
         function_calls = []
+        audio_chunks_queue = []  # Queue for immediate WebSocket sending
         
         def text_callback(text: str):
             collected_text.append(text)
             
         def audio_callback(audio_data: bytes):
-            # New streaming approach: send RAW PCM chunks immediately (no WAV conversion per chunk)
+            # Send RAW PCM chunks IMMEDIATELY for real-time streaming
             chunk_id = f"chunk_{int(time.time() * 1000)}_{len(collected_audio)}"
             self.logger.info(f"🎵 [AUDIO-CALLBACK] {chunk_id} triggered with {len(audio_data)} bytes PCM, websocket available: {websocket is not None}")
             
@@ -541,23 +631,112 @@ class GeminiHomeAssistantApp:
                         "chunk_count": len(collected_audio)
                     }
                     
-                    # Send metadata and binary data
-                    self.logger.info(f"🎵 [BACKEND-SEND] {chunk_id} sending {len(audio_data)} raw PCM bytes")
-                    asyncio.create_task(websocket.send_text(json.dumps(chunk_metadata)))
-                    asyncio.create_task(websocket.send_bytes(audio_data))
-                    self.logger.info(f"🎵 [BACKEND-SENT] {chunk_id} successfully sent {len(audio_data)} bytes to WebSocket")
+                    # Store for tracking but SEND IMMEDIATELY
+                    audio_chunks_queue.append({
+                        "metadata": chunk_metadata,
+                        "audio_data": audio_data,
+                        "chunk_id": chunk_id
+                    })
+                    
+                    self.logger.info(f"🎵 [AUDIO-QUEUED] {chunk_id} queued for tracking ({len(audio_data)} bytes) - total queued: {len(audio_chunks_queue)}")
+                    
+                    # SEND IMMEDIATELY for real-time streaming
+                    async def send_chunk_now():
+                        try:
+                            # Send metadata first
+                            await websocket.send_text(json.dumps(chunk_metadata))
+                            self.logger.info(f"🎵 [STREAM-SEND] {chunk_id} metadata sent immediately")
+                            
+                            # Send binary data
+                            await websocket.send_bytes(audio_data)
+                            self.logger.info(f"🎵 [STREAM-SENT] {chunk_id} audio streamed: {len(audio_data)} bytes")
+                            
+                        except Exception as e:
+                            self.logger.error(f"❌ [STREAM-ERROR] Failed to stream chunk {chunk_id}: {e}")
+                    
+                    # Execute immediately
+                    asyncio.create_task(send_chunk_now())
                     
                 except Exception as e:
-                    self.logger.warning(f"Failed to send audio chunk via WebSocket: {e}")
+                    self.logger.warning(f"Failed to create audio chunk streaming task: {e}")
                     # Audio is already in collected_audio for completion tracking
         
         def function_call_callback(calls):
-            function_calls.extend(calls)
+            """
+            Processa e executa function calls do Gemini em tempo real
+            """
+            try:
+                for call in calls:
+                    self.logger.info(f"🔧 [FUNCTION-CALL] Gemini solicitou execução: {call.name} com args: {call.args}")
+                    
+                    # Executar a função de forma assíncrona
+                    async def execute_function():
+                        try:
+                            # Preparar dados da function call
+                            function_data = {
+                                "id": getattr(call, 'id', ''),
+                                "name": call.name,
+                                "args": dict(call.args) if call.args else {}
+                            }
+                            
+                            # Executar via Home Assistant client
+                            result = await self._execute_ha_function(function_data)
+                            
+                            self.logger.info(f"✅ [FUNCTION-RESULT] Resultado: {result}")
+                            
+                            # Enviar resultado de volta para o Gemini
+                            if result and self.global_session:
+                                function_response = {
+                                    "id": function_data["id"],
+                                    "name": function_data["name"],
+                                    "response": result
+                                }
+                                
+                                await self.gemini_client.send_function_response([function_response])
+                                self.logger.info(f"📤 [FUNCTION-RESPONSE] Resultado enviado para Gemini")
+                            
+                        except Exception as e:
+                            self.logger.error(f"❌ [FUNCTION-ERROR] Erro ao executar função {call.name}: {e}")
+                    
+                    # Executar em background
+                    asyncio.create_task(execute_function())
+                    
+                # Também armazenar para logs
+                function_calls.extend(calls)
+                
+            except Exception as e:
+                self.logger.error(f"❌ [FUNCTION-CALLBACK-ERROR] Erro no callback de function calls: {e}")
+        
+        def completion_callback():
+            """Callback executado quando o Gemini termina de gerar resposta"""
+            if websocket:
+                try:
+                    # Enviar sinal de que a resposta está completa
+                    completion_message = {
+                        "type": "generation_complete",
+                        "message": "Resposta do assistente concluída",
+                        "timestamp": time.time()
+                    }
+                    
+                    async def send_completion():
+                        try:
+                            await websocket.send_text(json.dumps(completion_message))
+                            self.logger.info("✅ [COMPLETION-SIGNAL] Enviado sinal de conclusão para frontend")
+                        except Exception as e:
+                            self.logger.warning(f"Falha ao enviar sinal de conclusão: {e}")
+                    
+                    asyncio.create_task(send_completion())
+                    
+                except Exception as e:
+                    self.logger.warning(f"Falha ao criar task de conclusão: {e}")
         
         # Receber respostas usando a API oficial
         try:
             # Definir a sessão no cliente se necessário
             self.gemini_client.session = session_context
+            
+            # Configurar callback de completion
+            self.gemini_client.set_completion_callback(completion_callback)
             
             self.logger.debug(f"Starting to receive responses for up to 15 seconds...")
             
@@ -568,12 +747,17 @@ class GeminiHomeAssistantApp:
                     audio_callback=audio_callback,
                     function_call_callback=function_call_callback
                 ),
-                timeout=8.0  # Increased timeout to allow more time for audio generation and response processing
+                timeout=25.0  # Tempo suficiente para Gemini processar e gerar resposta de áudio
             )
         except asyncio.TimeoutError:
             self.logger.debug("Response collection timeout - proceeding with collected data")
         except Exception as e:
             self.logger.warning(f"Error collecting responses: {e}")
+        
+        # Audio chunks are now sent immediately in real-time via streaming callbacks
+        # No need to send in batch - just log summary
+        if audio_chunks_queue:
+            self.logger.info(f"📊 [AUDIO-STREAM-SUMMARY] {len(audio_chunks_queue)} chunks were streamed in real-time via WebSocket")
         
         # Processar texto coletado
         if collected_text:
@@ -584,9 +768,9 @@ class GeminiHomeAssistantApp:
         
         # Audio is now sent via streaming chunks, no need for consolidation
         # Just log summary of what was collected
-        if collected_audio:
-            total_audio_size = sum(len(chunk) for chunk in collected_audio)
-            self.logger.info(f"📊 [AUDIO-SUMMARY] Streamed {len(collected_audio)} chunks, total: {total_audio_size} bytes PCM")
+        if audio_chunks_queue:
+            total_audio_size = sum(len(chunk_data["audio_data"]) for chunk_data in audio_chunks_queue)
+            self.logger.info(f"📊 [AUDIO-SUMMARY] Streamed {len(audio_chunks_queue)} chunks, total: {total_audio_size} bytes PCM")
             
             # Send final streaming signal to indicate audio response is complete
             if websocket:
@@ -594,20 +778,28 @@ class GeminiHomeAssistantApp:
                     # Send audio complete signal via websocket
                     complete_message = {
                         "type": "audio_complete",
-                        "chunks_sent": len(collected_audio),
+                        "chunks_sent": len(audio_chunks_queue),
                         "total_size": total_audio_size,
                         "format": "pcm",
                         "timestamp": time.time()
                     }
-                    asyncio.create_task(websocket.send_text(json.dumps(complete_message)))
-                    self.logger.info(f"🎵 [AUDIO-COMPLETE] Sent completion signal via websocket")
+                    
+                    async def send_audio_complete():
+                        try:
+                            await websocket.send_text(json.dumps(complete_message))
+                            self.logger.info(f"🎵 [AUDIO-COMPLETE] Sent completion signal via websocket")
+                        except Exception as e:
+                            self.logger.warning(f"Failed to send audio_complete: {e}")
+                    
+                    asyncio.create_task(send_audio_complete())
+                    
                 except Exception as e:
-                    self.logger.warning(f"Failed to send audio_complete via websocket: {e}")
+                    self.logger.warning(f"Failed to create audio_complete task: {e}")
             
             # Always add to responses for consistency
             responses.append({
                 "type": "audio_complete",
-                "chunks_sent": len(collected_audio),
+                "chunks_sent": len(audio_chunks_queue),
                 "total_size": total_audio_size,
                 "format": "pcm"
             })
@@ -631,6 +823,297 @@ class GeminiHomeAssistantApp:
         
         return responses
     
+    async def collect_gemini_response_with_websocket(self, session_id: str, websocket) -> Dict[str, Any]:
+        """
+        Coleta resposta do Gemini após gravação manual e envia via WebSocket
+        
+        Args:
+            session_id: ID da sessão
+            websocket: Conexão WebSocket para streaming
+            
+        Returns:
+            Resultado do processamento
+        """
+        if session_id not in self.active_sessions:
+            raise ValueError(f"Session {session_id} not found")
+        
+        session_data = self.active_sessions[session_id]
+        start_time = time.time()
+        
+        try:
+            # Usar a sessão existente do Gemini
+            session_context = session_data.gemini_session
+            
+            # Coletar respostas com streaming de áudio
+            responses = await self._collect_official_responses(session_context, websocket)
+            
+            # Processar resultados
+            result = {
+                "session_id": session_id,
+                "timestamp": datetime.now().isoformat(),
+                "processing_time_ms": int((time.time() - start_time) * 1000),
+                "responses": responses
+            }
+            
+            # Enviar resposta de texto se disponível
+            for response in responses:
+                if response.get("type") == "text":
+                    await websocket.send_json({
+                        "type": "response",
+                        "content": response["content"],
+                        "timestamp": datetime.now().isoformat()
+                    })
+                    break
+            
+            # Atualizar estatísticas da sessão
+            session_data.update_activity()
+            processing_time = time.time() - start_time
+            session_data.record_response_time(processing_time)
+            
+            self.logger.info(f"✅ [RESPONSE-COMPLETE] Processamento finalizado para sessão {session_id}")
+            return result
+            
+        except Exception as e:
+            # Registrar erro
+            session_data.record_error(str(e))
+            error_msg = f"Erro ao coletar resposta do Gemini: {e}"
+            self.logger.error(error_msg, session_id=session_id)
+            
+            # Enviar erro para o frontend
+            await websocket.send_json({
+                "type": "error",
+                "message": error_msg,
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            raise
+    
+    async def _execute_ha_function(self, function_call: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Executa uma função do Home Assistant baseada nas HA_FUNCTION_DECLARATIONS
+        
+        Args:
+            function_call: Function call data from Gemini
+            
+        Returns:
+            Function execution result
+        """
+        try:
+            function_name = function_call["name"]
+            function_args = function_call.get("args", {})
+            
+            self.logger.info(f"🏠 [HA-FUNCTION] Executando: {function_name} com args: {function_args}")
+            
+            # ===== CONTROLE DE LUZES =====
+            if function_name == "control_light":
+                entity_id = function_args.get("entity_id")
+                action = function_args.get("action")
+                brightness = function_args.get("brightness")
+                color_name = function_args.get("color_name")
+                
+                if action == "turn_on":
+                    service_data = {"entity_id": entity_id}
+                    if brightness is not None:
+                        service_data["brightness_pct"] = brightness
+                    if color_name:
+                        service_data["color_name"] = color_name
+                    
+                    await self.ha_client.call_service("light", "turn_on", service_data)
+                    return {
+                        "success": True,
+                        "action": "light_on",
+                        "device": entity_id,
+                        "message": f"Luz {entity_id} ligada"
+                    }
+                    
+                elif action == "turn_off":
+                    await self.ha_client.call_service("light", "turn_off", {"entity_id": entity_id})
+                    return {
+                        "success": True,
+                        "action": "light_off", 
+                        "device": entity_id,
+                        "message": f"Luz {entity_id} desligada"
+                    }
+                    
+            # ===== CONTROLE DE INTERRUPTORES =====
+            elif function_name == "control_switch":
+                entity_id = function_args.get("entity_id")
+                action = function_args.get("action")
+                
+                if action == "turn_on":
+                    await self.ha_client.call_service("switch", "turn_on", {"entity_id": entity_id})
+                    return {
+                        "success": True,
+                        "action": "switch_on",
+                        "device": entity_id,
+                        "message": f"Interruptor {entity_id} ligado"
+                    }
+                elif action == "turn_off":
+                    await self.ha_client.call_service("switch", "turn_off", {"entity_id": entity_id})
+                    return {
+                        "success": True,
+                        "action": "switch_off",
+                        "device": entity_id,
+                        "message": f"Interruptor {entity_id} desligado"
+                    }
+                    
+            # ===== ATIVAÇÃO DE CENAS =====
+            elif function_name == "activate_scene":
+                entity_id = function_args.get("entity_id")
+                await self.ha_client.call_service("scene", "turn_on", {"entity_id": entity_id})
+                return {
+                    "success": True,
+                    "action": "scene_activated",
+                    "scene": entity_id,
+                    "message": f"Cena {entity_id} ativada"
+                }
+                
+            # ===== CONTROLE DE CLIMA =====
+            elif function_name == "control_climate":
+                entity_id = function_args.get("entity_id")
+                action = function_args.get("action")
+                temperature = function_args.get("temperature")
+                hvac_mode = function_args.get("hvac_mode")
+                
+                service_data = {"entity_id": entity_id}
+                if temperature is not None:
+                    service_data["temperature"] = temperature
+                if hvac_mode:
+                    service_data["hvac_mode"] = hvac_mode
+                    
+                await self.ha_client.call_service("climate", action, service_data)
+                return {
+                    "success": True,
+                    "action": f"climate_{action}",
+                    "device": entity_id,
+                    "message": f"Clima {entity_id} configurado"
+                }
+                
+            # ===== CONTROLE DE MÍDIA =====
+            elif function_name == "control_media_player":
+                entity_id = function_args.get("entity_id") 
+                action = function_args.get("action")
+                volume_level = function_args.get("volume_level")
+                
+                service_data = {"entity_id": entity_id}
+                if volume_level is not None:
+                    service_data["volume_level"] = volume_level
+                    
+                await self.ha_client.call_service("media_player", action, service_data)
+                return {
+                    "success": True,
+                    "action": f"media_{action}",
+                    "device": entity_id,
+                    "message": f"Media player {entity_id} controlado"
+                }
+                
+            # ===== CONSULTA DE SENSORES =====
+            elif function_name == "get_sensor_state":
+                entity_id = function_args.get("entity_id")
+                state = await self.ha_client.get_entity_state(entity_id)
+                return {
+                    "success": True,
+                    "action": "sensor_query",
+                    "device": entity_id,
+                    "state": state.state if state else "desconhecido",
+                    "attributes": state.attributes if state else {},
+                    "message": f"Sensor {entity_id}: {state.state if state else 'desconhecido'}"
+                }
+                
+            # ===== CONSULTA DE ENTIDADES =====
+            elif function_name == "get_entity_state":
+                entity_id = function_args.get("entity_id")
+                state = await self.ha_client.get_entity_state(entity_id)
+                return {
+                    "success": True,
+                    "action": "entity_query",
+                    "device": entity_id,
+                    "state": state.state if state else "desconhecido",
+                    "attributes": state.attributes if state else {},
+                    "message": f"Entidade {entity_id}: {state.state if state else 'desconhecido'}"
+                }
+                
+            # ===== LISTAR ENTIDADES =====
+            elif function_name == "list_entities":
+                domain = function_args.get("domain")
+                area = function_args.get("area")
+                
+                entities = await self.ha_client.get_all_states()
+                
+                # Filtrar por domínio
+                if domain:
+                    entities = [e for e in entities if e.entity_id.startswith(f"{domain}.")]
+                
+                # Filtrar por área (se disponível nos atributos)
+                if area:
+                    filtered_entities = []
+                    for entity in entities:
+                        state = await self.ha_client.get_entity_state(entity.entity_id)
+                        if state and state.attributes.get("area") == area:
+                            filtered_entities.append(entity)
+                    entities = filtered_entities
+                
+                # Limitar para não sobrecarregar
+                entities = entities[:20]
+                
+                return {
+                    "success": True,
+                    "action": "list_entities",
+                    "domain": domain,
+                    "area": area,
+                    "entities": [{"id": e.entity_id, "name": e.attributes.get('friendly_name', e.entity_id)} for e in entities],
+                    "count": len(entities),
+                    "message": f"Encontradas {len(entities)} entidades"
+                }
+                
+            # ===== CONTROLE DE COBERTURAS =====
+            elif function_name == "control_cover":
+                entity_id = function_args.get("entity_id")
+                action = function_args.get("action")
+                position = function_args.get("position")
+                
+                service_data = {}
+                if position is not None:
+                    service_data["position"] = position
+                    
+                service_data["entity_id"] = entity_id
+                await self.ha_client.call_service("cover", action, service_data)
+                return {
+                    "success": True,
+                    "action": f"cover_{action}",
+                    "device": entity_id,
+                    "message": f"Cobertura {entity_id} controlada"
+                }
+                
+            # ===== CONTROLE DE FECHADURAS =====
+            elif function_name == "control_lock":
+                entity_id = function_args.get("entity_id")
+                action = function_args.get("action")
+                
+                await self.ha_client.call_service("lock", action, {"entity_id": entity_id})
+                return {
+                    "success": True,
+                    "action": f"lock_{action}",
+                    "device": entity_id,
+                    "message": f"Fechadura {entity_id} {action}"
+                }
+                
+            else:
+                self.logger.warning(f"⚠️ [HA-FUNCTION] Função desconhecida: {function_name}")
+                return {
+                    "success": False,
+                    "error": f"Função desconhecida: {function_name}",
+                    "message": f"A função {function_name} não está implementada"
+                }
+                
+        except Exception as e:
+            self.logger.error(f"❌ [HA-FUNCTION-ERROR] Erro ao executar {function_call}: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "message": f"Erro ao executar função: {str(e)}"
+            }
+    
     async def _execute_function_call(self, function_call: Dict[str, Any], session_data: SessionData) -> Optional[Dict[str, Any]]:
         """
         Execute a function call via Home Assistant.
@@ -652,7 +1135,9 @@ class GeminiHomeAssistantApp:
             if function_name == "turn_on_device":
                 entity_id = function_args.get("entity_id")
                 if entity_id:
-                    await self.ha_client.turn_on(entity_id)
+                    # Determinar domínio da entidade
+                    domain = entity_id.split('.')[0]
+                    await self.ha_client.call_service(domain, "turn_on", {"entity_id": entity_id})
                     return {
                         "success": True,
                         "action": "turn_on",
@@ -663,7 +1148,9 @@ class GeminiHomeAssistantApp:
             elif function_name == "turn_off_device":
                 entity_id = function_args.get("entity_id")
                 if entity_id:
-                    await self.ha_client.turn_off(entity_id)
+                    # Determinar domínio da entidade
+                    domain = entity_id.split('.')[0]
+                    await self.ha_client.call_service(domain, "turn_off", {"entity_id": entity_id})
                     return {
                         "success": True,
                         "action": "turn_off",
@@ -674,7 +1161,7 @@ class GeminiHomeAssistantApp:
             elif function_name == "get_device_state":
                 entity_id = function_args.get("entity_id")
                 if entity_id:
-                    state = await self.ha_client.get_state(entity_id)
+                    state = await self.ha_client.get_entity_state(entity_id)
                     return {
                         "success": True,
                         "action": "get_state",
@@ -684,7 +1171,7 @@ class GeminiHomeAssistantApp:
                     }
             
             elif function_name == "list_devices":
-                entities = await self.ha_client.get_entities()
+                entities = await self.ha_client.get_all_states()
                 return {
                     "success": True,
                     "action": "list_devices",
@@ -767,7 +1254,7 @@ class GeminiHomeAssistantApp:
             Dict containing cleanup statistics
         """
         if max_age_minutes is None:
-            max_age_minutes = self.session_timeout_minutes
+            max_age_minutes = self.session_timeout.seconds // 60
         
         if max_idle_minutes is None:
             max_idle_minutes = max_age_minutes // 2  # Default to half of max age
@@ -844,7 +1331,7 @@ class GeminiHomeAssistantApp:
         
         try:
             while True:
-                await asyncio.sleep(self.cleanup_interval_seconds)
+                await asyncio.sleep(self.cleanup_interval)
                 await self.cleanup_old_sessions()
         except asyncio.CancelledError:
             self.logger.info("Session cleanup task cancelled")
@@ -1150,8 +1637,8 @@ class GeminiHomeAssistantApp:
         
         # Perform cleanup with more aggressive settings for optimization
         cleanup_results = await self.cleanup_old_sessions(
-            max_age_minutes=self.session_timeout_minutes,
-            max_idle_minutes=self.session_timeout_minutes // 3  # More aggressive idle timeout
+            max_age_minutes=self.session_timeout.seconds // 60,
+            max_idle_minutes=self.session_timeout.seconds // 3  # More aggressive idle timeout
         )
         
         # Force cleanup unhealthy sessions
@@ -1210,7 +1697,12 @@ class GeminiHomeAssistantApp:
             )
 
             # Enviar mensagem de texto inicial para gerar resposta de boas-vindas
-            welcome_prompt = "Olá! Dê as boas-vindas ao usuário ao Home Assistant. Seja breve e amigável, explicando que você pode ajudar a controlar dispositivos e responder perguntas sobre a casa."
+            welcome_prompt = """Olá! Dê as boas-vindas ao usuário ao Home Assistant. 
+            Seja breve e amigável, explicando que você pode ajudar a controlar dispositivos e responder perguntas sobre a casa.
+            
+            IMPORTANTE: Use a função list_entities com domain='climate' para listar os arcondicionados disponíveis e inclua essa lista na sua mensagem de boas-vindas para que o usuário saiba quais dispositivos pode controlar.
+            
+            Formato sugerido: 'Olá! Sou seu assistente do Home Assistant. Posso controlar os seguintes arcondicionados: [lista dos arcondicionados]. O que você gostaria de fazer?'"""
 
             # Definir a sessão ativa no cliente
             self.gemini_client.session = session_data.gemini_session
@@ -1329,7 +1821,12 @@ class GeminiHomeAssistantApp:
             )
             
             # Enviar mensagem de texto inicial para gerar resposta de boas-vindas
-            welcome_prompt = "Olá! Dê as boas-vindas ao usuário ao Home Assistant. Seja breve e amigável, explicando que você pode ajudar a controlar dispositivos e responder perguntas sobre a casa."
+            welcome_prompt = """Olá! Dê as boas-vindas ao usuário ao Home Assistant. 
+            Seja breve e amigável, explicando que você pode ajudar a controlar dispositivos e responder perguntas sobre a casa.
+            
+            IMPORTANTE: Use a função list_entities com domain='switch' para listar os interruptores disponíveis e inclua essa lista na sua mensagem de boas-vindas para que o usuário saiba quais dispositivos pode controlar.
+            
+            Formato sugerido: 'Olá! Sou seu assistente do Home Assistant. Posso controlar os seguintes interruptores: [lista dos switches]. O que você gostaria de fazer?'"""
             
             # Definir a sessão ativa no cliente
             self.gemini_client.session = session_data.gemini_session
@@ -1575,4 +2072,91 @@ class GeminiHomeAssistantApp:
                 processing_time=processing_time,
                 session_health_score=session_data.get_health_score()
             )
-            raise AudioProcessingError(f"Audio processing failed: {str(e)}") 
+            raise AudioProcessingError(f"Audio processing failed: {str(e)}")
+    
+    async def simple_collect_response(self, session_id: str, websocket=None):
+        """
+        Método simplificado para coletar resposta do Gemini
+        USA SESSÃO PERSISTENTE GLOBAL PARA MAIOR ESTABILIDADE
+        """
+        try:
+            self.logger.info(f"🎯 [SIMPLE-COLLECT] Iniciando coleta com sessão persistente para {session_id}")
+            
+            # 🔥 GARANTIR SESSÃO PERSISTENTE ESTÁ ATIVA
+            await self._ensure_global_session()
+            
+            if not self._session_healthy:
+                self.logger.error(f"❌ [SIMPLE-COLLECT] Sessão persistente não está saudável")
+                return
+            
+            self.logger.info(f"✅ [SIMPLE-COLLECT] Usando sessão persistente global")
+            
+            # Contador de chunks para debug
+            chunk_count = 0
+            
+            # Callbacks exatamente como no teste que funcionou
+            def audio_callback(audio_bytes: bytes):
+                """Callback para áudio recebido - IGUAL AO TESTE"""
+                nonlocal chunk_count
+                chunk_count += 1
+                self.logger.info(f"🎵 [SIMPLE-AUDIO-CALLBACK] Chunk {chunk_count}: {len(audio_bytes)} bytes")
+                
+                if websocket:
+                    async def send_audio_chunk():
+                        try:
+                            # Enviar metadata
+                            metadata = {
+                                "type": "audio_chunk",
+                                "size": len(audio_bytes),
+                                "format": "pcm",
+                                "sample_rate": 24000,
+                                "chunk_id": f"callback_{chunk_count}",
+                                "timestamp": time.time()
+                            }
+                            
+                            await websocket.send_text(json.dumps(metadata))
+                            await websocket.send_bytes(audio_bytes)
+                            
+                            self.logger.info(f"✅ [SIMPLE-SENT-CALLBACK] Chunk {chunk_count} enviado via WebSocket")
+                            
+                        except Exception as e:
+                            self.logger.error(f"❌ [SIMPLE-SEND-ERROR-CALLBACK] Erro ao enviar chunk {chunk_count}: {e}")
+                    
+                    # Executar envio em background
+                    asyncio.create_task(send_audio_chunk())
+            
+            def text_callback(text: str):
+                """Callback para texto recebido"""
+                self.logger.info(f"📝 [SIMPLE-TEXT-CALLBACK] Recebido: {text}")
+            
+            # Usar receive_responses IGUAL AO TESTE QUE FUNCIONOU
+            try:
+                await asyncio.wait_for(
+                    self.gemini_client.receive_responses(
+                        text_callback=text_callback,
+                        audio_callback=audio_callback
+                    ),
+                    timeout=30.0
+                )
+            except asyncio.TimeoutError:
+                self.logger.warning("⏰ [SIMPLE-COLLECT] Timeout ao aguardar respostas")
+            
+            # Enviar completion
+            if websocket:
+                await websocket.send_text(json.dumps({
+                    "type": "generation_complete",
+                    "message": "Resposta concluída",
+                    "chunks_sent": chunk_count,
+                    "timestamp": time.time()
+                }))
+            
+            self.logger.info(f"✅ [SIMPLE-COMPLETE] Geração completa - {chunk_count} chunks enviados")
+                        
+        except Exception as e:
+            self.logger.error(f"❌ [SIMPLE-ERROR] Erro na coleta simples: {e}")
+            if websocket:
+                await websocket.send_text(json.dumps({
+                    "type": "error", 
+                    "message": f"Erro: {str(e)}",
+                    "timestamp": time.time()
+                })) 

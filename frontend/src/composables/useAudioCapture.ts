@@ -13,13 +13,73 @@ export interface AudioCaptureError {
   details?: string
 }
 
+// AudioWorklet source code baseado no script oficial do Google
+const AUDIO_WORKLET_SOURCE = `
+class AudioProcessingWorklet extends AudioWorkletProcessor {
+  // Buffer de 2048 samples como no script oficial do Google
+  // A 16kHz isso resulta em ~8 envios por segundo
+  buffer = new Int16Array(2048);
+  
+  // Índice atual de escrita
+  bufferWriteIndex = 0;
+  
+  constructor() {
+    super();
+    this.hasAudio = false;
+  }
+  
+  /**
+   * @param inputs Float32Array[][] [input#][channel#][sample#]
+   * @param outputs Float32Array[][]
+   */
+  process(inputs) {
+    if (inputs[0].length) {
+      const channel0 = inputs[0][0];
+      this.processChunk(channel0);
+    }
+    return true;
+  }
+  
+  sendAndClearBuffer() {
+    this.port.postMessage({
+      event: "chunk",
+      data: {
+        int16arrayBuffer: this.buffer.slice(0, this.bufferWriteIndex).buffer,
+      },
+    });
+    this.bufferWriteIndex = 0;
+  }
+  
+  processChunk(float32Array) {
+    const l = float32Array.length;
+    
+    for (let i = 0; i < l; i++) {
+      // Converter float32 (-1 a 1) para int16 (-32768 a 32767)
+      // Usando 32768 como no script oficial do Google
+      const int16Value = float32Array[i] * 32768;
+      this.buffer[this.bufferWriteIndex++] = int16Value;
+      
+      if(this.bufferWriteIndex >= this.buffer.length) {
+        this.sendAndClearBuffer();
+      }
+    }
+    
+    if(this.bufferWriteIndex >= this.buffer.length) {
+      this.sendAndClearBuffer();
+    }
+  }
+}
+
+registerProcessor('audio-recorder-worklet', AudioProcessingWorklet);
+`;
+
 export function useAudioCapture() {
   const isRecording = ref(false)
   const isConnecting = ref(false)
   const error = ref<AudioCaptureError | null>(null)
   const audioContext = ref<AudioContext | null>(null)
   const mediaStream = ref<MediaStream | null>(null)
-  const processor = ref<ScriptProcessorNode | null>(null)
+  const audioWorkletNode = ref<AudioWorkletNode | null>(null)
   const websocket = ref<WebSocket | null>(null)
   const connectionRetryCount = ref(0)
   const isSharedWebSocket = ref(false) // Flag para indicar se o WebSocket é compartilhado
@@ -36,6 +96,14 @@ export function useAudioCapture() {
   }
 
   /**
+   * Cria URL blob para o AudioWorklet
+   */
+  const createWorkletURL = (): string => {
+    const blob = new Blob([AUDIO_WORKLET_SOURCE], { type: 'application/javascript' })
+    return URL.createObjectURL(blob)
+  }
+
+  /**
    * Verifica se o navegador suporta as APIs necessárias
    */
   const checkBrowserSupport = (): boolean => {
@@ -46,6 +114,12 @@ export function useAudioCapture() {
 
     if (!window.AudioContext && !(window as any).webkitAudioContext) {
       setError('AUDIO_CONTEXT_NOT_SUPPORTED', 'Navegador não suporta Web Audio API')
+      return false
+    }
+
+    // Verificar suporte a AudioWorklet
+    if (!AudioWorkletNode) {
+      setError('AUDIO_WORKLET_NOT_SUPPORTED', 'Navegador não suporta AudioWorklet')
       return false
     }
 
@@ -200,46 +274,72 @@ export function useAudioCapture() {
 
       // Configurar Web Audio API
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext
-      audioContext.value = new AudioContextClass()
+      audioContext.value = new AudioContextClass({
+        sampleRate: config.sampleRate || 16000
+      })
+
+      // Carregar AudioWorklet (baseado no script oficial do Google)
+      const workletURL = createWorkletURL()
+      try {
+        await audioContext.value.audioWorklet.addModule(workletURL)
+        console.log('🎵 [WORKLET] AudioWorklet carregado com sucesso')
+      } catch (err) {
+        console.error('❌ [WORKLET] Erro ao carregar AudioWorklet:', err)
+        // Cleanup da URL
+        URL.revokeObjectURL(workletURL)
+        throw err
+      }
+
+      // Cleanup da URL após uso
+      URL.revokeObjectURL(workletURL)
 
       // Criar nós de processamento de áudio
       const source = audioContext.value.createMediaStreamSource(mediaStream.value)
-      processor.value = audioContext.value.createScriptProcessor(4096, 1, 1)
+      audioWorkletNode.value = new AudioWorkletNode(audioContext.value, 'audio-recorder-worklet', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+        processorOptions: {
+          numberOfInputs: 1,
+          numberOfOutputs: 1,
+          outputChannelCount: [1]
+        }
+      })
 
       // Conectar nós de áudio
-      source.connect(processor.value)
-      processor.value.connect(audioContext.value.destination)
+      source.connect(audioWorkletNode.value)
+      audioWorkletNode.value.connect(audioContext.value.destination)
 
-      // Enviar dados de áudio
-      processor.value.onaudioprocess = (event: AudioProcessingEvent) => {
-        if (!isRecording.value || !websocket.value || websocket.value.readyState !== WebSocket.OPEN) {
-          return
-        }
-
-        const inputBuffer = event.inputBuffer.getChannelData(0)
-        const int16Buffer = new Int16Array(inputBuffer.length)
-        
-        // Converter float32 para int16
-        for (let i = 0; i < inputBuffer.length; i++) {
-          int16Buffer[i] = Math.max(-32768, Math.min(32767, inputBuffer[i] * 32768))
-        }
-
-        try {
-          // Enviar como ArrayBuffer
-          websocket.value.send(int16Buffer.buffer)
-          
-          // Log periódico (a cada ~2 segundos)
-          if (Math.random() < 0.05) {
-            console.log('🎤 [AUDIO-SEND] Enviando chunk para backend:', {
-              samples: int16Buffer.length,
-              bytes: int16Buffer.buffer.byteLength,
-              volume: Math.max(...Array.from(inputBuffer).map(Math.abs)).toFixed(4)
-            })
+              // Configurar handler para chunks de áudio do AudioWorklet
+        audioWorkletNode.value.port.onmessage = (event: MessageEvent) => {
+          if (!isRecording.value || !websocket.value || websocket.value.readyState !== WebSocket.OPEN) {
+            return
           }
-        } catch (error) {
-          console.error('Erro ao enviar dados de áudio:', error)
+
+          // Processar eventos do AudioWorklet
+          const { event: eventType, data } = event.data
+          
+          if (eventType === 'chunk' && data?.int16arrayBuffer) {
+            try {
+              const arrayBuffer = data.int16arrayBuffer
+              websocket.value.send(arrayBuffer)
+              
+              // Log periódico (a cada ~2 segundos como no Google)
+              if (Math.random() < 0.125) { // ~8 chunks/segundo, log 1 vez por segundo
+                const int16View = new Int16Array(arrayBuffer)
+                const maxValue = Math.max(...Array.from(int16View).map(Math.abs))
+                console.log('🎤 [GOOGLE-STYLE] Enviando chunk para backend:', {
+                  samples: int16View.length,
+                  bytes: arrayBuffer.byteLength,
+                  maxAmplitude: maxValue,
+                  normalizedVolume: (maxValue / 32768).toFixed(4)
+                })
+              }
+            } catch (error) {
+              console.error('❌ [AUDIO-SEND] Erro ao enviar dados de áudio:', error)
+            }
+          }
         }
-      }
 
       isRecording.value = true
       isConnecting.value = false
@@ -280,11 +380,11 @@ export function useAudioCapture() {
     console.log('Iniciando cleanup de recursos de áudio')
     
     // 1. Parar o processador de áudio primeiro (para parar o envio)
-    if (processor.value) {
-      processor.value.onaudioprocess = null // Remove o callback imediatamente
-      processor.value.disconnect()
-      processor.value = null
-      console.log('Processador de áudio desconectado')
+    if (audioWorkletNode.value) {
+      audioWorkletNode.value.port.onmessage = null // Remove o callback imediatamente
+      audioWorkletNode.value.disconnect()
+      audioWorkletNode.value = null
+      console.log('AudioWorkletNode desconectado')
     }
 
     // 2. Parar as tracks de mídia
